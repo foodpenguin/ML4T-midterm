@@ -73,3 +73,8 @@ def test_checklist_status_requires_tests_to_run_and_pass():
     assert rep.test_status(res, "test_labels_synthetic.py") == "PASS"
     assert rep.test_status(res, "test_pit_real.py::test_universe_recomputed_by_hand") == "NOT RUN"
     assert rep.test_status(res, "test_missing.py") == "NOT RUN"
+
+
+def test_config_hash_tolerates_non_string_keys():
+    from crowding.runlog import config_hash
+    assert config_hash({None: 1, "a": 2}) == config_hash({"None": 1, "a": 2})

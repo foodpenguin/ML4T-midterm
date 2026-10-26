@@ -25,8 +25,17 @@ def data_snapshot() -> str:
     return hashlib.sha256(key.encode()).hexdigest()[:12]
 
 
+def _str_keys(obj):
+    """YAML can produce non-string keys (e.g. null); stringify them so keys sort."""
+    if isinstance(obj, dict):
+        return {str(k): _str_keys(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_str_keys(v) for v in obj]
+    return obj
+
+
 def config_hash(obj) -> str:
-    return hashlib.sha256(json.dumps(obj, sort_keys=True, default=str).encode()).hexdigest()[:12]
+    return hashlib.sha256(json.dumps(_str_keys(obj), sort_keys=True, default=str).encode()).hexdigest()[:12]
 
 
 def append(family: str, trial: str, config, eval_window: str, split_dates: str,

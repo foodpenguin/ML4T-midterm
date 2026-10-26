@@ -18,7 +18,7 @@ signals:
 mapping: "per tranche: top 20% long, bottom 20% short, 0.5 gross per leg, max 10% of gross per name"
 
 allocators:
-  null: equal_weight
+  null_model: equal_weight
   comparison: "inverse_vol: weight within a leg proportional to 1 / rvol_20d (t-1), same signal, same 20-day window"
   headline: equal_weight       # fixed now; not chosen by result
 
