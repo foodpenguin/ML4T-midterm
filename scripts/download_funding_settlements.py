@@ -7,7 +7,9 @@ needs the exact settlement times, so this script stores one row per settlement.
 Source: Binance public REST ``GET /fapi/v1/fundingRate`` (no API key).
 Output: ``data/raw/funding_settlements/{SYMBOL}.csv`` with columns
         ``fundingTime`` (ms, UTC), ``fundingRate``, ``markPrice``.
-The script resumes: a symbol whose file already exists is skipped.
+The script resumes: a symbol whose file exists with at least one settlement is skipped.
+A symbol the endpoint rejects (HTTP 400) gets no file and is listed in ``_failures.json``,
+so it is never mistaken for a contract without funding history.
 
 Usage (from the repository root):
     python scripts/download_funding_settlements.py --end 2026-10-25
@@ -38,6 +40,10 @@ def to_ms(day: str) -> int:
     return int(datetime.fromisoformat(day).replace(tzinfo=timezone.utc).timestamp() * 1000)
 
 
+class BadRequest(Exception):
+    """The endpoint rejected the request (unknown or delisted symbol, bad parameters)."""
+
+
 def get(params: dict) -> list:
     query = urllib.parse.urlencode(params)
     for attempt in range(6):
@@ -49,7 +55,7 @@ def get(params: dict) -> list:
                 time.sleep(30 * (attempt + 1))
                 continue
             if e.code == 400:
-                return []
+                raise BadRequest(e.read().decode(errors="replace")) from e
             time.sleep(2 ** attempt)
         except (urllib.error.URLError, TimeoutError):
             time.sleep(2 ** attempt)
@@ -82,26 +88,49 @@ def main() -> None:
     with open(META, encoding="utf-8") as f:
         symbols = [r["symbol"] for r in csv.DictReader(f)]
     OUT.mkdir(parents=True, exist_ok=True)
-    todo = [s for s in symbols if not (OUT / f"{s}.csv").exists()]
+    todo = [s for s in symbols if not is_complete(OUT / f"{s}.csv")]
     print(f"{len(todo)}/{len(symbols)} symbols to download", flush=True)
 
-    for i, sym in enumerate(todo, 1):
-        rows = fetch_symbol(sym, start_ms, end_ms)
-        tmp = OUT / f"{sym}.csv.part"
+    failures = download(todo, start_ms, end_ms, OUT)
+    (OUT / "_failures.json").write_text(json.dumps(failures, indent=2))
+    (OUT / "_download.json").write_text(json.dumps({
+        "source": URL, "start": START, "end_exclusive": args.end,
+        "downloaded_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "n_symbols": len(symbols), "n_failed": len(failures),
+    }, indent=2))
+    if failures:
+        print(f"{len(failures)} symbols rejected by the endpoint: {sorted(failures)}", flush=True)
+
+
+def is_complete(path: Path) -> bool:
+    """A file counts as downloaded only if it holds at least one settlement row."""
+    if not path.exists():
+        return False
+    with open(path, encoding="utf-8") as f:
+        return sum(1 for _ in f) > 1
+
+
+def download(symbols: list[str], start_ms: int, end_ms: int, out: Path) -> dict[str, str]:
+    failures = {}
+    for i, sym in enumerate(symbols, 1):
+        try:
+            rows = fetch_symbol(sym, start_ms, end_ms)
+        except BadRequest as e:
+            failures[sym] = str(e)[:200]
+            continue
+        if not rows:
+            failures[sym] = "no settlements returned"
+            continue
+        tmp = out / f"{sym}.csv.part"
         with open(tmp, "w", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
             w.writerow(["fundingTime", "fundingRate", "markPrice"])
             for r in rows:
                 w.writerow([r["fundingTime"], r["fundingRate"], r.get("markPrice", "")])
-        tmp.replace(OUT / f"{sym}.csv")
-        if i % 25 == 0 or i == len(todo):
-            print(f"  {i}/{len(todo)} {sym}: {len(rows)} settlements", flush=True)
-
-    (OUT / "_download.json").write_text(json.dumps({
-        "source": URL, "start": START, "end_exclusive": args.end,
-        "downloaded_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "n_symbols": len(symbols),
-    }, indent=2))
+        tmp.replace(out / f"{sym}.csv")
+        if i % 25 == 0 or i == len(symbols):
+            print(f"  {i}/{len(symbols)} {sym}: {len(rows)} settlements", flush=True)
+    return failures
 
 
 if __name__ == "__main__":

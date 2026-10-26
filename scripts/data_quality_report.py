@@ -6,6 +6,8 @@ Run from the repository root after scripts/build_dataset.py:
 from __future__ import annotations
 
 import json
+import subprocess
+import xml.etree.ElementTree as ET
 import sys
 from pathlib import Path
 
@@ -20,7 +22,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from crowding import quality  # noqa: E402
-from crowding.config import PROCESSED, setup  # noqa: E402
+from crowding.config import ARTIFACTS, PROCESSED, setup  # noqa: E402
 from crowding.features import FEATURES  # noqa: E402
 from crowding.io import load_daily_bars, load_metrics  # noqa: E402
 
@@ -106,6 +108,37 @@ def fig_knowledge_lag(metrics: pd.DataFrame) -> str:
     return path.name
 
 
+def run_tests() -> dict[str, str]:
+    """Run the test suite and return {test id: passed|failed|skipped|error}."""
+    ARTIFACTS.mkdir(parents=True, exist_ok=True)
+    xml = ARTIFACTS / "pytest_report.xml"
+    subprocess.run([sys.executable, "-m", "pytest", "-q", f"--junitxml={xml}"], cwd=ROOT,
+                   capture_output=True, text=True)
+    return parse_junit(xml)
+
+
+def parse_junit(xml: Path) -> dict[str, str]:
+    out = {}
+    if not xml.exists():
+        return out
+    for case in ET.parse(xml).getroot().iter("testcase"):
+        file = case.get("classname", "").split(".")[-1] + ".py"
+        name = f"{file}::{case.get('name', '')}"
+        tags = {child.tag for child in case}
+        out[name] = ("failed" if "failure" in tags else "error" if "error" in tags
+                     else "skipped" if "skipped" in tags else "passed")
+    return out
+
+
+def test_status(results: dict[str, str], test_id: str) -> str:
+    """PASS only if every matching test ran and passed; NOT RUN if none ran."""
+    hits = [v for k, v in results.items() if k == test_id or k.startswith(test_id + "::")
+            or k.startswith(test_id + "[") or k.split("::")[0] == test_id]
+    if not hits or all(v == "skipped" for v in hits):
+        return "NOT RUN"
+    return "PASS" if all(v == "passed" for v in hits) else "FAIL"
+
+
 def main() -> None:
     FIG.mkdir(parents=True, exist_ok=True)
     cfg = setup()
@@ -130,6 +163,15 @@ def main() -> None:
     dev = features[features["date"] >= cfg["evaluation"]["dev_start"]]
     sample = dev.merge(labels[["date", "symbol", "y_total_7d"]], on=["date", "symbol"])
     in_sample = sample["fund_7d"].notna() & sample["y_total_7d"].notna()
+
+    tests = run_tests()
+
+    def st(test_id: str) -> str:
+        return test_status(tests, test_id)
+
+    with_funding = set(settlements["symbol"])
+    no_funding_leavers = sorted(set(u["leavers"]) - with_funding)
+    no_funding_universe = sorted(set(universe.loc[universe["in_universe"], "symbol"]) - with_funding)
 
     figs = [fig_coverage(universe, bars), fig_feature_missing(features), fig_knowledge_lag(metrics)]
 
@@ -190,6 +232,7 @@ price levels are not comparable across names): {len(multiplier)} contracts, for 
 {kv_table(rec)}
 
 - **Old-contract rows**: settlements dated before a relisted ticker's first price bar belong to the previous contract and are dropped. Example tickers: BNTUSDT, OGUSDT, RIFUSDT.
+- **Contracts with no settlement data**: {len(manifest['symbols_without_settlements'])} in total; {len(no_funding_universe)} of them ever in the universe ({', '.join(no_funding_universe) or 'none'}). Their rows have no `fund_7d`, so they leave the modeling sample.
 
 ## 5. Positioning metrics
 
@@ -231,6 +274,10 @@ Share of in-universe rows with a missing value, by year:
 
 ## 8. Labels
 
+Open (pre-holdout) rows only. Labels whose realization reaches into the holdout are
+nulled in the open files (`sealed_label_*`); holdout and shadow rows live in
+`data/processed/sealed/` and are not summarized here.
+
 {md_table(lab)}
 
 - **Censored labels**: the horizon runs past the snapshot end. They are left missing and are never forced.
@@ -240,14 +287,15 @@ Share of in-universe rows with a missing value, by year:
 
 | Level | Check | Result | Evidence |
 |---|---|---|---|
-| Values | Every feature uses records with `available_at` ≤ decision time | PASS | `tests/test_pit_real.py::test_prefix_stability`: features rebuilt from truncated inputs equal the full-history build at 3 cutoffs |
-| Values | Funding settled at the decision instant is not used | PASS | `test_fund_7d_recomputed_from_raw_csv` |
+| Values | Every feature uses records with `available_at` ≤ decision time | {st('test_pit_real.py::test_prefix_stability')} | `tests/test_pit_real.py::test_prefix_stability`: features rebuilt from truncated inputs equal the full-history build at 3 cutoffs |
+| Values | Funding settled at the decision instant is not used | {st('test_pit_real.py::test_fund_7d_recomputed_from_raw_csv')} | `test_fund_7d_recomputed_from_raw_csv` |
 | Values | Non-price knowledge lag shown | PASS | figure above; METRICS lag ≥ 5 min by construction |
-| Values | Label anchored to the fill (next open, funding window (d, d+H]) | PASS | `tests/test_labels_synthetic.py` |
-| Universe | Eligibility computed from information at t | PASS | `test_universe_recomputed_by_hand`, plus prefix stability |
-| Universe | Delisted / removed names included | PASS | {u['leavers_count']} leavers stay in the panel until their last bar |
+| Values | Label anchored to the fill (next open, funding window (d, d+H]) | {st('test_labels_synthetic.py')} | `tests/test_labels_synthetic.py` |
+| Values | No open file carries a holdout price; holdout read once, logged | {st('test_sealing.py')} | `tests/test_sealing.py`, `tests/test_holdout_guard.py` |
+| Universe | Eligibility computed from information at t | {st('test_pit_real.py::test_universe_recomputed_by_hand')} | `test_universe_recomputed_by_hand`, plus prefix stability |
+| Universe | Delisted / removed names included | {'PASS' if not no_funding_leavers else 'FAIL'} | {u['leavers_count']} leavers stay in the panel until their last bar; leavers without funding data: {no_funding_leavers or 'none'} |
 | Identifiers | Ticker reuse handled with effective dates | PASS | relisted tickers start at their first price bar; old-contract funding dropped |
-| Identifiers | Renames (MATIC→POL, FTM→S, RNDR→RENDER) | FAIL (disclosed) | treated as separate contracts, not spliced. Each name's history restarts, so its age and z-score windows reset. The bias is small: only 3 names, and the restart excludes them for at most 90 days |
+| Identifiers | Renames (MATIC→POL, FTM→S, RNDR→RENDER) | FAIL (disclosed) | treated as separate contracts, not spliced, so the new name's age and z-score windows restart; affects 3 names |
 | Values | Top-account L/S missing for most of 2022 | FAIL (disclosed) | source gap. Neutral-rank imputation with a missing flag; no time-series fill |
 
 ## What could break this

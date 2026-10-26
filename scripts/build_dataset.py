@@ -9,8 +9,9 @@ Inputs (raw, see README for how to fetch them):
 Outputs (data/processed/):
     universe.parquet   every (decision date, symbol) that traded on d-1, with screen results
     settlements.parquet one row per funding settlement
-    features.parquet   candidate features for in-universe rows
-    labels.parquet     forward labels for in-universe rows
+    features.parquet   candidate features for in-universe rows before the holdout
+    labels.parquet     forward labels for those rows (labels ending inside the holdout nulled)
+    sealed/            the same two tables for holdout and shadow rows
     manifest.json      input hashes, row counts, git commit, setup hash
 """
 from __future__ import annotations
@@ -26,10 +27,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from crowding.config import PROCESSED, RAW, setup  # noqa: E402
+from crowding.config import PROCESSED, RAW, SEALED, setup  # noqa: E402
 from crowding.features import build_features  # noqa: E402
 from crowding.io import load_daily_bars, load_funding_settlements, load_metrics  # noqa: E402
 from crowding.labels import build_labels  # noqa: E402
+from crowding.sample import seal  # noqa: E402
 from crowding.universe import build_universe  # noqa: E402
 
 
@@ -75,10 +77,17 @@ def main() -> None:
     labels = build_labels(bars, settlements, features[["date", "symbol"]])
     log(f"labels {labels.shape}")
 
+    # Holdout and shadow rows go to data/processed/sealed/, readable only through
+    # sample.load_sample's guard; open labels that would end inside the holdout are nulled.
+    f_open, l_open, f_sealed, l_sealed = seal(features, labels)
+    SEALED.mkdir(parents=True, exist_ok=True)
     universe.to_parquet(PROCESSED / "universe.parquet", index=False)
     settlements.to_parquet(PROCESSED / "settlements.parquet", index=False)
-    features.to_parquet(PROCESSED / "features.parquet", index=False)
-    labels.to_parquet(PROCESSED / "labels.parquet", index=False)
+    f_open.to_parquet(PROCESSED / "features.parquet", index=False)
+    l_open.to_parquet(PROCESSED / "labels.parquet", index=False)
+    f_sealed.to_parquet(SEALED / "features.parquet", index=False)
+    l_sealed.to_parquet(SEALED / "labels.parquet", index=False)
+    log(f"open rows {len(f_open):,}, sealed rows {len(f_sealed):,}")
 
     funding_dir = RAW / "raw" / "funding_settlements"
     download = json.loads((funding_dir / "_download.json").read_text())
@@ -99,7 +108,9 @@ def main() -> None:
                         "sha256": sha256(list((RAW / "METRICS" / "hourly").glob("*.parquet")))},
         },
         "rows": {"bars": len(bars), "settlements": len(settlements), "metrics": len(metrics),
-                 "universe": len(universe), "features": len(features), "labels": len(labels)},
+                 "universe": len(universe), "features_open": len(f_open),
+                 "features_sealed": len(f_sealed)},
+        "symbols_without_settlements": sorted(set(bars["symbol"]) - set(settlements["symbol"])),
     }
     (PROCESSED / "manifest.json").write_text(json.dumps(manifest, indent=2))
     log("done")

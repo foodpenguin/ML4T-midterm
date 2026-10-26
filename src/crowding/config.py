@@ -10,6 +10,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 RAW = ROOT / "data"
 PROCESSED = ROOT / "data" / "processed"
+SEALED = PROCESSED / "sealed"          # holdout and shadow rows; read only via sample.load_sample
 ARTIFACTS = ROOT / "artifacts"
 
 DAY = pd.Timedelta(days=1)

@@ -17,7 +17,9 @@ from crowding.universe import build_universe
 pytestmark = pytest.mark.skipif(not (PROCESSED / "features.parquet").exists(),
                                 reason="processed dataset not built")
 
-CUTOFFS = [pd.Timestamp("2022-11-10"), pd.Timestamp("2024-03-15"), pd.Timestamp("2026-01-20")]
+# All cutoffs lie before the holdout: the open processed files hold no holdout rows.
+CUTOFFS = [pd.Timestamp("2022-11-10"), pd.Timestamp("2024-03-15"), pd.Timestamp("2025-09-15")]
+HOLDOUT = pd.Timestamp(setup()["evaluation"]["holdout"]["start"])
 
 
 @pytest.fixture(scope="module")
@@ -27,17 +29,23 @@ def raw():
 
 
 @pytest.fixture(scope="module")
+def metrics():
+    m = load_metrics()
+    lo = min(CUTOFFS) - pd.Timedelta(days=45)
+    return m[(m["ts"] > lo) & (m["ts"] <= max(CUTOFFS))]
+
+
+@pytest.fixture(scope="module")
 def processed():
     return (pd.read_parquet(PROCESSED / "features.parquet"),
             pd.read_parquet(PROCESSED / "universe.parquet"))
 
 
 @pytest.mark.parametrize("cutoff", CUTOFFS)
-def test_prefix_stability(raw, processed, cutoff):
+def test_prefix_stability(raw, processed, metrics, cutoff):
     bars, settlements = raw
     full_feat, full_uni = processed
     syms = full_uni.loc[(full_uni["date"] == cutoff) & full_uni["in_universe"], "symbol"]
-    metrics = load_metrics()
     metrics = metrics[metrics["symbol"].isin(syms)
                       & (metrics["ts"] > cutoff - pd.Timedelta(days=45))
                       & (metrics["ts"] <= cutoff)]
@@ -91,6 +99,14 @@ def test_fund_7d_recomputed_from_raw_csv(processed):
 
 def test_no_feature_row_outside_universe(processed):
     feat, uni = processed
-    keys = uni.loc[uni["in_universe"], ["date", "symbol"]]
+    keys = uni.loc[uni["in_universe"] & (uni["date"] < HOLDOUT), ["date", "symbol"]]
     assert len(feat) == len(keys)
+    assert feat["date"].max() < HOLDOUT, "open feature file contains holdout rows"
     assert not feat.duplicated(["date", "symbol"]).any()
+
+
+def test_open_labels_carry_no_holdout_price():
+    lab = pd.read_parquet(PROCESSED / "labels.parquet")
+    for H in setup()["labels"]["horizons_days"]:
+        late = lab[f"label_end_{H}d"] > HOLDOUT
+        assert lab.loc[late, f"y_total_{H}d"].isna().all(), f"{H}d label realized in the holdout"

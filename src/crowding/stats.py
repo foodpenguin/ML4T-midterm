@@ -87,7 +87,10 @@ def deflated_sharpe(returns: pd.Series, n_trials: int, sr_var_trials: float | No
     var = sr_var_trials if sr_var_trials is not None else 1.0 / T
     g = 0.5772156649
     z = stats.norm.ppf
-    sr0 = np.sqrt(var) * ((1 - g) * z(1 - 1 / n_trials) + g * z(1 - 1 / (n_trials * np.e)))
+    if n_trials <= 1:
+        sr0 = 0.0          # no search to deflate for: DSR reduces to PSR against zero
+    else:
+        sr0 = np.sqrt(var) * ((1 - g) * z(1 - 1 / n_trials) + g * z(1 - 1 / (n_trials * np.e)))
     denom = np.sqrt(1 - skew * sr + (kurt - 1) / 4 * sr ** 2)
     dsr = stats.norm.cdf((sr - sr0) * np.sqrt(T - 1) / denom)
     return {"dsr": float(dsr), "sr_annual": float(sr * np.sqrt(periods_per_year)),

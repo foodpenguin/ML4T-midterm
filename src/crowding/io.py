@@ -78,7 +78,9 @@ def load_metrics(folder: Path | None = None, columns: list[str] | None = None) -
     cols = ["ts", "symbol"] + (columns or METRIC_COLUMNS)
     frames = [pd.read_parquet(f, columns=cols) for f in sorted(folder.glob("metrics_*.parquet"))]
     m = pd.concat(frames, ignore_index=True)
-    m = m[m["ts"] < snapshot_end()]
+    # ts is knowledge time, so a row at exactly the snapshot end is admissible for the
+    # decision taken at that instant (bars and settlements are event-timed, hence "<").
+    m = m[m["ts"] <= snapshot_end()]
     for c in cols[2:]:
         m[c] = m[c].astype(np.float32)
     m["symbol"] = m["symbol"].astype(str)

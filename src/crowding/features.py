@@ -102,24 +102,29 @@ def funding_features(settlements: pd.DataFrame, dates: pd.DatetimeIndex) -> pd.D
     return out
 
 
+def _log_pos(x: pd.Series) -> pd.Series:
+    """log of a positive finite ratio; 0, negative or inf becomes NaN (missing, not extreme)."""
+    return np.log(x.where((x > 0) & np.isfinite(x)))
+
+
 def metric_features(metrics: pd.DataFrame, dates: pd.DatetimeIndex) -> pd.DataFrame:
     """Positioning features from the hourly archive, sampled at ts = d 00:00."""
     frames = []
     for sym, g in metrics.groupby("symbol", sort=False):
         h = g.set_index("ts").drop(columns="symbol")
         h = h[~h.index.duplicated(keep="last")].asfreq("h")
-        log_oi = np.log(h["oi"].where(h["oi"] > 0))
-        div = np.log(h["top_pos_lsr"]) - np.log(h["global_acct_lsr"])
-        glsr = np.log(h["global_acct_lsr"])
-        tplsr = np.log(h["top_pos_lsr"])
-        taker = np.log(h["taker_lsvr_1h"].where(h["taker_lsvr_1h"] > 0))
+        log_oi = _log_pos(h["oi"])
+        glsr = _log_pos(h["global_acct_lsr"])
+        tplsr = _log_pos(h["top_pos_lsr"])
+        div = tplsr - glsr
+        taker = _log_pos(h["taker_lsvr_1h"])
 
         def m24(x):
             return x.rolling(24, min_periods=18).mean()
 
         hourly = pd.DataFrame({
             "log_oi": log_oi,
-            "log_oi_value": np.log(h["oi_value"].where(h["oi_value"] > 0)),
+            "log_oi_value": _log_pos(h["oi_value"]),
             "div24": m24(div), "glsr24": m24(glsr), "tplsr24": m24(tplsr),
             "taker_24h": m24(taker),
             "taker_7d": taker.rolling(168, min_periods=126).mean(),
@@ -151,7 +156,8 @@ def build_features(bars: pd.DataFrame, settlements: pd.DataFrame, metrics: pd.Da
     keys = keys.set_index(["date", "symbol"])
     dates = keys.index.get_level_values("date").unique().sort_values()
 
-    f = keys.join(bar_features(bars), how="left")
+    bf = bar_features(bars)
+    f = keys.join(bf, how="left")
     f = f.join(funding_features(settlements, dates), how="left")
     f = f.join(metric_features(metrics, dates), how="left")
 
@@ -163,7 +169,7 @@ def build_features(bars: pd.DataFrame, settlements: pd.DataFrame, metrics: pd.Da
     f["mkt_fund_7d"] = by_date.transform("median")
     f["xs_fund_disp"] = by_date.transform(lambda x: x.quantile(0.75) - x.quantile(0.25))
 
-    btc = bar_features(bars).xs("BTCUSDT", level="symbol")[["ret_7d", "rvol_20d"]]
+    btc = bf.xs("BTCUSDT", level="symbol")[["ret_7d", "rvol_20d"]]
     btc.columns = ["btc_ret_7d", "btc_rvol_20d"]
     f = f.join(btc, on="date")
     return f[list(FEATURES)].reset_index()
