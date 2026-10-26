@@ -70,6 +70,10 @@ labels:
   buffer_days: 7                 # = primary horizon; purge applied in every fold
 
 features:
+  missing_policy: >
+    No time-series fill. A row enters the modeling sample only if fund_7d and the label exist
+    (all models share it). Other features are cross-sectionally ranked to [-0.5, 0.5]; a
+    missing value takes the neutral rank 0 and keeps an _isna flag for tree models.
   budget: [10, 30]
   longest_lookback_days: 90
   redundancy_cut_abs_spearman: 0.7
@@ -135,6 +139,14 @@ risk:
   kill_switch_drawdown: {watch: 0.05, halve: 0.10, halt: 0.15, unwind: 0.20}
   stress_episodes: ["2022-05 LUNA", "2022-11 FTX"]
   stress_spread_multiple: 3
+
+amendments:   # changes to v1 made before any backtest; none was based on a result
+  - date: "2026-10-26"
+    change: features.missing_policy added
+    reason: >
+      The data.binance.vision metrics archive has empty top-account long/short columns for
+      most of 2022 (files present, values empty), found by the data-quality pass. OI and the
+      all-account ratio are complete from 2022-Q1, so dev_start stays 2022-03-01.
 
 models:
   ladder:

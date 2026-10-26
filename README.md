@@ -1,0 +1,45 @@
+# Perpetual-futures crowding premium (ML4T midterm)
+
+One complete pass through the ML4T workflow on Binance USDT-M perpetuals:
+- **Hypothesis**: crowded leveraged longs pay funding and later unwind, so funding and positioning data rank next-week returns across the 100 most liquid contracts.
+- **Contract**: [`setup.yaml`](setup.yaml), setup v1.
+- **Sealed holdout**: decision dates 2025-10-25 to 2026-10-24, sealed in commit `38132d0`. Its partial prior exposure is disclosed in [`ledger/prior_exposure.md`](ledger/prior_exposure.md).
+
+## Layout
+
+| Path | What it is |
+|---|---|
+| `setup.yaml` | Trading setup v1, evaluation protocol, registered confirmatory test |
+| `ledger/` | Research ledger (trial families and budgets), prior-exposure disclosure |
+| `run_log.csv` | One row per run: commit, data snapshot, config hash, split dates, metrics, decision |
+| `src/crowding/` | Library: loaders (`io`), universe, labels, features, quality checks |
+| `scripts/` | Entry points, run from the repository root |
+| `tests/` | Point-in-time and label-timing tests |
+| `reports/` | Generated reports and figures (data quality, ...) |
+| `tools/` | Raw-data collectors that produced `data/` (legacy, kept for provenance) |
+| `doc/research/` | Earlier exploration, counted as prior trials in the ledger |
+| `data/` | Raw snapshot and `data/processed/`, **not committed** |
+
+## Reproduce
+
+Run everything from the repository root (Python 3.11+):
+
+```bash
+pip install -r requirements.txt
+python scripts/download_funding_settlements.py --end 2026-10-25
+python scripts/build_dataset.py
+python scripts/data_quality_report.py
+python -m pytest
+```
+
+The raw snapshot in `data/` was collected with the scripts in `tools/`:
+- `fetch_universe_ext.py`: daily klines.
+- `backfill_metrics.py`: data.binance.vision metrics.
+- `daily_update.py`: daily extension.
+
+To rebuild it from scratch, run those scripts and then cut the result at `snapshot_end_exclusive` in `setup.yaml`.
+
+**Why numbers can differ on a rerun**:
+- Binance documents no revision policy for klines or funding history.
+- Delisted symbols can drop out of some endpoints over time, so a later download may have fewer leavers.
+- `data/processed/manifest.json` records the SHA-256 of every input, so a mismatch is detectable.
