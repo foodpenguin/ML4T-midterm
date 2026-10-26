@@ -1,0 +1,62 @@
+# W4 model registration (ML4T Ch. 11-15). Committed before any model was trained.
+registered_utc: "2026-10-27"
+period: dev
+label: y_total_7d
+target: "within-date rank of y_total_7d in [-0.5, 0.5] (sample.load_sample)"
+evaluation: "out-of-fold predictions on the 32 walk-forward validation months (2023-03..2025-10)"
+
+features:
+  source: "triage R0003: every non-STOP candidate (decision in reports/triage_table.csv)"
+  name_level:            # 11 REVISE + 3 CONTROL, as within-date ranks r_<feature>, missing -> 0
+    revise: [fund_1d, fund_7d, fund_30d, oi_to_adv, lsr_div, lsr_div_chg_7d, glsr_z_30d,
+             taker_24h, taker_7d, rvol_20d, log_age]
+    control: [ret_7d, ret_21d, volmom_21d]
+  market_state: [mkt_fund_7d]   # PROCEED as a state; raw level, identical across names on a date
+  routing:
+    rule_carry: "fund_7d only"
+    ridge: "14 name-level ranks; standardized on each training fold. mkt_fund_7d excluded:
+            a value shared by every name cannot change a linear model's cross-sectional order"
+    lightgbm: "14 name-level ranks + 14 _isna flags + mkt_fund_7d raw (trees can interact it)"
+
+models:
+  rule_carry:
+    score: "-r_fund_7d"
+    trials: 1
+  ridge:
+    alpha_grid: "logspace(-2, 6, 9)"
+    selection: "nested: per fold, alpha with the best mean daily IC on that fold's inner window
+                (last 3 months of its training data, purged); refit on the full training window"
+    surface: "all 9 alphas also scored out-of-fold with a fixed alpha (validation surface figure)"
+    trials: 9
+  lightgbm:
+    objective: l1
+    tuning: "fixed-holdout: Optuna TPE, 50 trials, trained on dev rows with label_end <= 2022-12-01,
+             scored by mean daily IC on 2022-12-01..2023-02-28 (labels end by 2023-03-01), i.e.
+             entirely before the first validation month; parameters then frozen for all folds"
+    search_space:
+      num_leaves: [4, 31]
+      max_depth: [2, 5]
+      min_data_in_leaf: [200, 5000]       # log scale
+      learning_rate: [0.01, 0.1]          # log scale
+      feature_fraction: [0.5, 1.0]
+      bagging_fraction: [0.5, 1.0]
+      lambda_l2: [0.001, 100]             # log scale
+    per_fold: "early stopping (100 rounds, l1) on the fold's inner window, refit on the full
+               training window with the best iteration count"
+    seed: 42
+    trials: 50
+
+yardstick: "mean daily Spearman IC vs y_total_7d, Newey-West 95% CI (lags >= 7), per-fold IC"
+paired_comparison: "daily IC difference of each rung vs the previous rung on common dates, NW 95% CI"
+
+deployed_model_rule: >
+  Start from the rule baseline; move up a rung only if that rung's paired daily-IC difference
+  against the currently deployed model has a NW 95% CI above zero. The highest rung reached
+  is the deployed model for W5, SHAP and the holdout.
+
+interpretation:
+  shap: "deployed model, pooled out-of-fold; sign consistency, magnitude, stability of the
+         mean |SHAP| ranking across folds (Spearman between consecutive folds)"
+  conformal: "split conformal on |target - prediction| from each fold's inner window, at 80% and
+              90%; empirical coverage per validation fold; flag folds below 80%"
+  also_report: "IC against y_price_7d and y_funding_7d; Q5-Q1 mean-return spread of predictions"
