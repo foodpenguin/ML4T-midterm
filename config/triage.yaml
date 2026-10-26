@@ -1,0 +1,82 @@
+# Feature triage pre-registration (ML4T Ch. 7 gates). Committed before any feature was
+# related to a forward return. Changing a threshold or a sign after seeing results is a
+# trial and goes in the ledger.
+registered_utc: "2026-10-26"
+period: dev                      # 2022-03-01 .. 2025-10-24, labels realized before the holdout
+label: y_total_7d
+decay_horizons: [1, 3, 7, 14]
+folds: walk_forward_validation_months   # the 32 committed folds (2023-03 .. 2025-10)
+
+# Registered direction of the IC with y_total_7d, from the mechanism in setup.yaml.
+# "-" crowded longs underperform; "+" informed / large accounts lead; "0" no sign claim
+# (two-sided test). Controls are reported but carry no claim (prior exposure).
+expected_sign:
+  fund_1d: "-"
+  fund_7d: "-"
+  fund_30d: "-"
+  fund_z_90d: "-"
+  fund_chg_7d: "-"
+  oi_chg_1d: "-"
+  oi_chg_7d: "-"
+  oi_to_adv: "-"
+  lsr_div: "+"
+  lsr_div_chg_7d: "+"
+  glsr_z_30d: "-"
+  tplsr_z_30d: "+"
+  taker_24h: "-"                 # crowding reading; flow persistence would imply "+"
+  taker_7d: "-"
+  rvol_20d: "0"
+  log_adv_30d: "0"
+  log_age: "0"
+  ret_7d: control
+  ret_21d: control
+  volmom_21d: control
+  mkt_fund_7d: market_state
+  xs_fund_disp: market_state
+  btc_ret_7d: market_state
+  btc_rvol_20d: market_state
+
+gates:
+  g1_placebo:
+    lags_days: [5, 21]
+    pass_if: "|IC at lag 21| < 0.5 * |IC at lag 0|, or the lag-21 NW CI includes 0"
+  g2_association:
+    hac_lags_min: 7
+    pass_if: "BH-adjusted q < 0.05 (family = name-level non-control features) and NW CI excludes 0"
+    fold_sign_share_min: 0.60
+  g3_shape:
+    quantiles: 5
+    pass_if: "|Spearman(quintile index, mean demeaned return)| >= 0.9"
+  g4_feasibility:
+    rebalance_days: 7
+    cost: "setup.yaml costs: 2 x (taker fee + half-spread tier) + sqrt impact at tranche order size"
+    pass_if: "signed gross Q5-Q1 spread per 7 days >= 2 x (2 legs x weekly churn x round-trip cost)"
+  g5_search:
+    family_alpha: 0.05
+    corrections: [benjamini_hochberg, holm_bonferroni]
+    report: effect size (mean IC) and q-values
+
+market_state_test: >
+  Market-state features are constant across names on a date, so they have no IC. Each is
+  tested by whether it conditions the rung-1 signal: IC(fund_7d) in the top minus the
+  bottom point-in-time tercile of the state, NW 95% CI. Family of 4, BH at 0.05.
+
+decision_rule:
+  PROCEED: >
+    signal/state: g2 passes with the registered sign ("0" = either sign), fold sign share
+    >= 0.60, g1 passes, g3 passes, g4 passes. market_state: heterogeneity CI excludes 0
+    after BH.
+  STOP: "g2 fails: BH q >= 0.05 and the NW CI includes 0 (no detectable association)"
+  REVISE: "every other case, including a significant IC with the opposite sign"
+  CONTROL: "ret_7d, ret_21d, volmom_21d: reported, no decision (prior exposure)"
+
+redundancy:
+  cut_abs_spearman: 0.7           # average within-date rank correlation
+  keep: "within a cluster, the member with the largest |NW t| at g2 (counted in the ledger)"
+
+mechanism_checks:                 # applied to the top 3 PROCEED/REVISE signals by |NW t|
+  timing_placebo: g1
+  shared_driver_control: "residualize within date on rvol_20d, log_adv_30d, ret_21d, beta_60d to BTC"
+  regime_heterogeneity: "IC by point-in-time terciles of BTC rvol_20d (expanding quantiles, >= 180 days of history)"
+  event_time_alignment: "not applicable: features are snapshots on a fixed daily clock, not event-triggered"
+  label_decomposition: "IC against y_price_7d and y_funding_7d separately (setup falsification criterion 2)"
