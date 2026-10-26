@@ -38,8 +38,9 @@ plt.rcParams.update({
 })
 
 
-def md_table(df: pd.DataFrame) -> str:
-    df = df.reset_index() if df.index.name or isinstance(df.index, pd.MultiIndex) else df
+def md_table(df: pd.DataFrame, index: bool = False) -> str:
+    if index or df.index.name or isinstance(df.index, pd.MultiIndex):
+        df = df.rename_axis(df.index.name or "").reset_index()
     cols = [str(c) for c in df.columns]
     lines = ["| " + " | ".join(cols) + " |", "|" + "---|" * len(cols)]
     for row in df.itertuples(index=False):
@@ -48,7 +49,7 @@ def md_table(df: pd.DataFrame) -> str:
 
 
 def kv_table(d: dict) -> str:
-    return md_table(pd.DataFrame({"check": list(d), "value": [d[k] for k in d]}))
+    return md_table(pd.DataFrame({"check": list(d), "value": pd.Series([d[k] for k in d], dtype=object)}))
 
 
 def fig_coverage(universe: pd.DataFrame, bars: pd.DataFrame) -> str:
@@ -173,6 +174,14 @@ def main() -> None:
     no_funding_leavers = sorted(set(u["leavers"]) - with_funding)
     no_funding_universe = sorted(set(universe.loc[universe["in_universe"], "symbol"]) - with_funding)
 
+    dev_q = features[features["date"] >= cfg["evaluation"]["dev_start"]]
+    dev_q = dev_q.assign(q=dev_q["date"].dt.to_period("Q").astype(str))
+    qmiss = dev_q.groupby("q")[list(FEATURES)].agg(lambda x: x.isna().mean())
+    gaps = pd.DataFrame([
+        {"feature": c, "quarters_over_20pct_missing": ", ".join(qmiss.index[qmiss[c] > 0.2]),
+         "worst_share": round(float(qmiss[c].max()), 3)}
+        for c in FEATURES if (qmiss[c] > 0.2).any()])
+
     figs = [fig_coverage(universe, bars), fig_feature_missing(features), fig_knowledge_lag(metrics)]
 
     n_iu = universe[universe["in_universe"]].groupby("date").size()
@@ -203,7 +212,7 @@ snapshot end `{manifest['snapshot_end_exclusive']}` exclusive). Rebuild with
 {kv_table(b)}
 
 - **Invalid bars**: zero-volume bars are listed but not trading, either before listing or after delisting. They are kept and flagged, are never forward-filled, and never count as a fill or as a return.
-- **Extreme returns**: the {b['abs_daily_return_gt_50pct']} daily moves above 50% are kept. Section 4 explains why.
+- **Extreme returns**: the {b['abs_daily_return_gt_50pct']} daily moves above 50% are kept. The redenomination screen in section 3 found no unit change among them, so they are treated as real price moves.
 
 ## 3. Corporate-action check (crypto analogue)
 
@@ -242,10 +251,13 @@ Missing share by column (all hourly rows):
 
 {md_table(pd.Series(m['nan_rate_by_column'], name='nan_share').rename_axis('column').to_frame())}
 
-**Known gap**: the archive's top-account long/short columns are empty for most of 2022,
-even though the daily files exist. OI and the all-account ratio are complete from 2022-Q1.
-Features built on the top-account columns (`lsr_div`, `lsr_div_chg_7d`, `tplsr_z_30d`) are
-therefore missing in 2022. They follow `features.missing_policy` in `setup.yaml`.
+**Known gaps** (dev-period quarters where a feature is missing for more than 20% of
+in-universe rows; the archive files exist but these columns are empty):
+
+{md_table(gaps) if len(gaps) else "None."}
+
+These features follow `features.missing_policy` in `setup.yaml`: neutral rank plus a
+missing flag, never a time-series fill.
 
 ![knowledge lag](figures/{figs[2]})
 
@@ -265,7 +277,7 @@ therefore missing in 2022. They follow `features.missing_policy` in `setup.yaml`
 
 Share of in-universe rows with a missing value, by year:
 
-{md_table(miss)}
+{md_table(miss.rename_axis("feature"), index=True)}
 
 ![feature missing](figures/{figs[1]})
 

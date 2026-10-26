@@ -145,8 +145,9 @@ amendments:   # changes to v1 made before any backtest; none was based on a resu
     change: features.missing_policy added
     reason: >
       The data.binance.vision metrics archive has empty top-account long/short columns for
-      most of 2022 (files present, values empty), found by the data-quality pass. OI and the
-      all-account ratio are complete from 2022-Q1, so dev_start stays 2022-03-01.
+      2022-Q1..Q4 and empty taker ratios for 2022-Q1..Q2 (files present, values empty), found
+      by the data-quality pass (reports/data_quality.md section 5). OI and the all-account
+      ratio are complete from 2022-Q1, so dev_start stays 2022-03-01.
 
 models:
   ladder:
