@@ -1,0 +1,147 @@
+"""Diagnose the W4 out-of-fold predictions (no refitting, no new trials).
+
+1. Rank edge vs mean return: per prediction quintile, the mean, median and 1%-winsorized mean
+   of the within-date demeaned 7-day return. A gap between median and mean spreads shows a
+   rank (median) edge that the return tails cancel.
+2. Family attribution: IC of the partial score built from one feature family's SHAP
+   contributions, for the deployed Ridge and for LightGBM.
+
+Run after scripts/run_models.py:
+    python scripts/diagnose_models.py
+Writes reports/models_diagnosis.md and reports/models_diagnosis_*.csv.
+"""
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
+
+from crowding import models, triage  # noqa: E402
+from crowding.config import ARTIFACTS  # noqa: E402
+from crowding.features import FEATURES  # noqa: E402
+from crowding.sample import load_sample  # noqa: E402
+
+PRED = ARTIFACTS / "predictions"
+REPORT = ROOT / "reports"
+
+
+def quintile_profile(pred: pd.DataFrame, smp: pd.DataFrame) -> pd.DataFrame:
+    d = pred.merge(smp[["date", "symbol", "y_total_7d"]], on=["date", "symbol"])
+    d["yd"] = d["y_total_7d"] - d.groupby("date")["y_total_7d"].transform("mean")
+    lo, hi = d["yd"].quantile([0.01, 0.99])
+    d["yw"] = d["yd"].clip(lo, hi)
+    pct = d.groupby("date")["pred"].rank(pct=True)
+    d["q"] = np.ceil(pct * 5).clip(1, 5).astype(int)
+    out = d.groupby("q").agg(mean_bp=("yd", "mean"), median_bp=("yd", "median"),
+                             winsor_mean_bp=("yw", "mean"), p99_bp=("yd", lambda x: x.quantile(0.99)),
+                             skew=("yd", "skew"), n=("yd", "size"))
+    for c in ("mean_bp", "median_bp", "winsor_mean_bp", "p99_bp"):
+        out[c] *= 1e4
+    spread = {}
+    for k, col in (("mean", "yd"), ("winsorized mean", "yw")):
+        s = d.groupby(["date", "q"])[col].mean().unstack()
+        spread[k] = triage.nw_stats((s[5] - s[1]).dropna(), 7)
+    med = d.groupby(["date", "q"])["yd"].median().unstack()
+    spread["median"] = triage.nw_stats((med[5] - med[1]).dropna(), 7)
+    out.attrs["spread"] = spread
+    return out
+
+
+def family_of(col: str) -> str:
+    base = col.removeprefix("r_").removesuffix("_isna")
+    if base in ("ret_7d", "ret_21d", "volmom_21d"):
+        return "momentum controls (prior exposure)"
+    return {"carry": "carry (funding)", "leverage": "leverage (OI)", "positioning": "positioning (L/S)",
+            "flow": "flow (taker)", "risk": "state (vol, age)", "liquidity": "state (vol, age)",
+            "market": "market state"}.get(FEATURES[base][1], FEATURES[base][1])
+
+
+def family_ic(contribs: pd.DataFrame, cols: list[str], smp: pd.DataFrame) -> pd.DataFrame:
+    d = contribs.merge(smp[["date", "symbol", "y_total_7d"]], on=["date", "symbol"])
+    rows = []
+    fams = pd.Series({c: family_of(c) for c in cols})
+    for fam, members in fams.groupby(fams):
+        score = d[members.index.tolist()].sum(axis=1)
+        if score.abs().sum() == 0:
+            continue
+        s = triage.nw_stats(triage.xs_ic(d.assign(_s=score), "_s", "y_total_7d"), 7)
+        rows.append({"family": fam, "features": ", ".join(members.index), "partial_ic": s["mean"],
+                     "ci_low": s["ci_low"], "ci_high": s["ci_high"],
+                     "share_of_abs_shap": float(d[members.index.tolist()].abs().sum(axis=1).mean())})
+    t = pd.DataFrame(rows)
+    t["share_of_abs_shap"] /= t["share_of_abs_shap"].sum()
+    return t.sort_values("share_of_abs_shap", ascending=False)
+
+
+def md(df: pd.DataFrame, nd: int = 4) -> str:
+    df = df.reset_index() if df.index.name else df
+    cols = [str(c) for c in df.columns]
+    lines = ["| " + " | ".join(cols) + " |", "|" + "---|" * len(cols)]
+    for _, r in df.iterrows():
+        lines.append("| " + " | ".join(f"{v:.{nd}f}" if isinstance(v, (float, np.floating)) else str(v)
+                                       for v in r.values) + " |")
+    return "\n".join(lines)
+
+
+def main() -> None:
+    smp = load_sample("dev", horizon=7)
+    sections = []
+    for name in ("rule_carry", "ridge", "lightgbm"):
+        q = quintile_profile(pd.read_parquet(PRED / f"{name}.parquet"), smp)
+        q.to_csv(REPORT / f"models_diagnosis_quintiles_{name}.csv")
+        sp = q.attrs["spread"]
+        sections.append(f"""### {name}
+
+{md(q.round(4), 2)}
+
+Q5−Q1 spread per 7 days:
+- **Mean**: {sp['mean']['mean'] * 1e4:+.1f} bp (t {sp['mean']['t']:+.2f}).
+- **1%-winsorized mean**: {sp['winsorized mean']['mean'] * 1e4:+.1f} bp (t {sp['winsorized mean']['t']:+.2f}).
+- **Median**: {sp['median']['mean'] * 1e4:+.1f} bp (t {sp['median']['t']:+.2f}).
+""")
+    fam_r = family_ic(pd.read_parquet(PRED / "ridge_shap.parquet"), models.ridge_columns(), smp)
+    fam_l = family_ic(pd.read_parquet(PRED / "lightgbm_shap.parquet"), models.lgbm_columns(), smp)
+    fam_r.to_csv(REPORT / "models_diagnosis_family_ridge.csv", index=False)
+    fam_l.to_csv(REPORT / "models_diagnosis_family_lightgbm.csv", index=False)
+
+    text = f"""# W4 diagnosis: what the models' IC is made of
+
+Generated by `scripts/diagnose_models.py` from the out-of-fold predictions of
+`scripts/run_models.py`. Nothing is refitted and no new trial is run.
+
+## 1. Rank edge vs mean return
+
+Each prediction quintile below shows the mean, median and 1%-winsorized mean of the
+within-date demeaned 7-day total return, in bp. It also shows the 99th percentile and the skew.
+
+{chr(10).join(sections)}
+
+**Reading**:
+- **Median spread clearly positive, mean spread not**: the models rank the typical coin correctly, but the bottom quintile carries the right tail. A few very large up-moves in names the model dislikes cancel the edge in mean returns.
+- **Winsorized mean**: shows how much of that cancellation comes from the extreme 1% of returns.
+
+## 2. Family attribution (partial-score IC)
+
+For each feature family, the family's SHAP contributions are summed into a partial score,
+and its daily IC is computed. `share_of_abs_shap` is the family's share of total |SHAP|.
+
+**Ridge (deployed)**
+
+{md(fam_r)}
+
+**LightGBM**
+
+{md(fam_l)}
+"""
+    (REPORT / "models_diagnosis.md").write_text(text, encoding="utf-8")
+    print(text)
+
+
+if __name__ == "__main__":
+    sys.stdout.reconfigure(encoding="utf-8")
+    main()
