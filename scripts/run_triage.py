@@ -87,7 +87,9 @@ def gate_row(smp, panel, f, expected, cfg, fold_of_date) -> dict:
     for k, v in qmeans.items():
         row[f"q{k}_ret"] = float(v)
     row["monotone_rho"] = float(stats.spearmanr(qmeans.index, qmeans.values).statistic)
-    row["g3_pass"] = abs(row["monotone_rho"]) >= 0.9
+    # Spearman over 5 points takes values in steps of 0.1; compare with a tolerance so that
+    # a computed 0.8999999999 counts as the registered 0.9.
+    row["g3_pass"] = abs(row["monotone_rho"]) >= 0.9 - 1e-9
     # gate 4: feasibility
     churn = triage.extreme_churn(smp, f, horizon=cfg["gates"]["g4_feasibility"]["rebalance_days"])
     pct = smp.groupby("date")[f].rank(pct=True)
@@ -297,7 +299,7 @@ def fmt(x, nd=4):
     return "" if pd.isna(x) else (f"{x:.{nd}f}" if isinstance(x, (float, np.floating)) else str(x))
 
 
-def main() -> None:
+def main(notes: str = "reports/triage.md") -> None:
     cfg = yaml.safe_load(open(ROOT / "config" / "triage.yaml", encoding="utf-8"))
     FIG.mkdir(parents=True, exist_ok=True)
     smp = load_sample("dev", horizon=7)
@@ -364,8 +366,8 @@ def main() -> None:
         split_dates=f"{len(fl)} folds {fl[0].val_start.date()}..{fl[-1].val_end.date()}; dev labels end <= holdout start",
         metrics={"name_level": counts, "market_state": mcounts, "top3": top,
                  "n_tested": int(len(table) + len(market))},
-        decision=f"PROCEED {', '.join(table.loc[table['decision'] == 'PROCEED', 'feature'])}",
-        gate="g1-g5", notes="reports/triage.md")
+        decision="PROCEED: " + (", ".join(table.loc[table["decision"] == "PROCEED", "feature"]) or "none"),
+        gate="g1-g5", notes=notes)
     print(f"run {run_id}: {counts} | market {mcounts} | top3 {top}")
 
 
@@ -487,4 +489,4 @@ models will control for (confounders as inputs) and what they must not condition
 
 if __name__ == "__main__":
     sys.stdout.reconfigure(encoding="utf-8")
-    main()
+    main(" ".join(sys.argv[1:]) or "reports/triage.md")
