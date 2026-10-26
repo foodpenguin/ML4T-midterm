@@ -1,0 +1,147 @@
+# Trading setup contract (ML4T Ch. 6). Written before any backtest of this strategy.
+# Tuning a value below stays inside v1. Changing the mechanics (position state space,
+# a new cost component, the decision clock) is v2 and is not comparable with v1.
+strategy_id: perp_crowding_premium
+setup_version: v1
+frozen_utc: "2026-10-26"
+textbook_reference: >
+  Starts from the textbook's case_studies/crypto_perps_funding setup (19 Binance perps,
+  8-hourly). Changes: point-in-time top-100 universe instead of a fixed list, daily decision
+  clock instead of 8-hourly, positioning features from data.binance.vision metrics added.
+
+hypothesis:
+  mechanism: >
+    When leveraged longs crowd a perpetual, its price trades above spot and longs pay funding
+    to shorts; whoever takes the other side carries squeeze and margin risk and should be paid
+    for it. Crowding driven by the account-weighted crowd while large accounts lean the other
+    way is more likely to unwind through price.
+  sources_of_edge: [funding_constraints, risk_compensation, flow_predictability]
+  counterparty: Margin-constrained directional longs who pay funding to keep exposure.
+  falsification:
+    - Validation mean daily Spearman IC of the deployed model has a HAC 95% CI that includes 0.
+    - Funding-inclusive IC is positive only through the funding leg (price-only IC <= 0) and the
+      gross long-short spread does not clear 2x the assumed round-trip cost.
+    - The IC sign flips in 2 or more of the 3 point-in-time realized-volatility terciles.
+
+data:
+  vendor: Binance USDT-M perpetual futures (public endpoints, no API key)
+  sources:
+    daily_bars: data/UNIVERSE/daily_ohlcv_ext.csv        # /fapi/v1/klines 1d
+    funding_settlements: data/raw/funding_settlements/   # /fapi/v1/fundingRate, one row per settlement
+    positioning: data/METRICS/hourly/                    # data.binance.vision um/daily/metrics, 5-min snapshots
+    symbols: data/UNIVERSE/symbols_meta.csv
+  snapshot_end_exclusive: "2026-10-25"                   # last complete UTC day 2026-10-24
+  timestamp_semantics:
+    daily_bar: "date = UTC 00:00 open time; close becomes knowable at date+1 00:00"
+    funding_settlement: "fundingTime = settlement instant; rate treated as knowable 1 minute later"
+    positioning: "hourly ts already equals knowledge time (snapshot create_time + 5 min)"
+  calendar: crypto_24_7          # every calendar day is a trading day; buffers count days
+
+universe:
+  rule: top_n_by_trailing_dollar_volume
+  top_n: 100
+  rank_window_days: 30           # mean quote volume over days d-30..d-1
+  min_median_quote_volume_usd: 5_000_000
+  min_listing_age_days: 60       # days since the contract's first daily bar
+  min_names_to_trade: 30         # fewer eligible names -> no-trade state
+  exclude_symbols: [USDCUSDT, PAXGUSDT, XAUTUSDT, DEFIUSDT, BTCDOMUSDT]  # stablecoin, gold tokens, index perps
+  leavers: included              # delisted contracts stay in the panel until their last bar
+  identifier_policy: >
+    A ticker that was delisted and relisted is a new contract from its first price bar;
+    funding settlements before that bar belong to the old contract and are dropped.
+    Renames (MATIC->POL, FTM->S, RNDR->RENDER) are separate contracts, not spliced.
+
+decision:
+  cadence: daily
+  snapshot: "00:00 UTC of decision date d"
+  admissible_information: "records with available_at <= d 00:00 UTC"
+  execution: "open of daily bar d (00:00 UTC), same instant as the snapshot"
+  execution_delay_robustness: "1 day (fill at the close of bar d)"
+
+labels:
+  primary: y_total_7d
+  horizons_days: [1, 3, 7, 14]   # IC decay across at least three horizons (gate 2)
+  definition: >
+    y_total_H(d) = open(d+H)/open(d) - 1 - sum of funding rates settled in (d 00:00, d+H 00:00],
+    i.e. the return to a long position entered at the open of d and closed at the open of d+H,
+    funding included. y_price_H and y_funding_H are stored separately for the decomposition.
+  training_target: cross-sectional rank of y_total_H within each decision date, scaled to [-0.5, 0.5]
+  forced_exit: "if a contract stops trading inside the horizon, exit at its last close"
+  buffer_days: 7                 # = primary horizon; purge applied in every fold
+
+features:
+  budget: [10, 30]
+  longest_lookback_days: 90
+  redundancy_cut_abs_spearman: 0.7
+  prior_exposure_controls: [ret_7d, ret_21d, volmom_21d]   # seen in earlier exploration; controls only
+
+evaluation:
+  scheme: expanding_walk_forward
+  dev_start: "2022-03-01"        # METRICS cross-section starts 2021-12; plus 90-day warm-up
+  min_train_months: 12
+  validation_block_months: 1
+  step_months: 1
+  retrain_cadence: monthly
+  first_validation_month: "2023-03"
+  label_buffer_days: 7           # purge; 14 when the 14d horizon is evaluated
+  feature_buffer_days: 0         # training always precedes validation, so no embargo
+  tuning: nested_walk_forward    # inner validation = last 3 months of each training window
+  holdout:
+    start: "2025-10-25"
+    end: "2026-10-24"
+    sealed_utc: "2026-10-26"
+    touches_allowed: 1
+    prior_exposure: >
+      Partially exposed before sealing: tools/run_carry.py (2026-07-14) backtested a top-50
+      cross-sectional funding carry rule through about 2026-07-13, and tools/analyze_alpha.py
+      (2026-08-24) tested OI change, top-vs-global long/short divergence and taker imbalance on
+      hourly data from 2026-07. See ledger/prior_exposure.md.
+  forward_shadow:
+    start: "2026-10-25"          # never seen by anyone; reported separately from the holdout
+  periods_per_year: 365
+
+confirmatory_test:
+  registered_utc: "2026-10-26"
+  primary: "holdout mean daily Spearman IC (deployed model vs y_total_7d), Newey-West 95% CI lower bound > 0"
+  secondary: "holdout net Sharpe at assumed cost > 0, reported with 95% CI and Deflated Sharpe (trials from ledger)"
+
+mapping:
+  position_state_space: long_short
+  selection: "top 20% scores long, bottom 20% short"
+  weighting: equal_weight          # null allocator; inverse_vol is the comparison allocator
+  rebalance: "7 staggered tranches; tranche (d mod 7) rebalances on day d and holds 7 days"
+  dollar_neutral: true
+  gross_exposure: 1.0              # 0.5 long + 0.5 short
+  max_weight_per_name: 0.10        # fraction of gross
+  no_trade_state: "eligible names < 30, or kill-switch halt"
+
+constraints:
+  leverage_max: 1.0
+  shorting: allowed
+  enforced: inside_simulation
+
+costs:
+  class: taker_fee_plus_spread_plus_sqrt_impact
+  capital_usd: 100_000
+  taker_fee_bps: 5
+  half_spread_bps_by_liquidity_rank: {"1-20": 1, "21-50": 2, "51-100": 4}
+  impact: "daily_vol * sqrt(order_usd / adv_usd)"
+  funding: cash_flow_in_pnl        # not a cost parameter; long pays positive funding
+  sweep_multiples: [0, 0.5, 1, 2, 3, 4]
+
+risk:
+  overlay: vol_target_t_minus_1
+  vol_target_annual: 0.20
+  kill_switch_drawdown: {watch: 0.05, halve: 0.10, halt: 0.15, unwind: 0.20}
+  stress_episodes: ["2022-05 LUNA", "2022-11 FTX"]
+  stress_spread_multiple: 3
+
+models:
+  ladder:
+    - {rung: 1, name: rule_carry, required: true, spec: "score = -cross-sectional rank of fund_7d; no fitting"}
+    - {rung: 2, name: ridge, required: true, alpha_grid: "logspace(-2, 6, 9)"}
+    - {rung: 3, name: lightgbm, required: true, objective: l1, max_trials: 50}
+    - {rung: 4, name: seq_xs_attention, required: false, max_configs: 20, seeds: 5}
+    - {rung: 5, name: ensemble_top3, required: false}
+  yardstick: "mean daily Spearman IC with Newey-West 95% CI on validation folds"
+  optional_v2: "RL position-sizing policy over OOS predictions; reported separately as setup v2"

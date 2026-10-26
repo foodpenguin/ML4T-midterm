@@ -1,0 +1,15 @@
+# Python 3.11+ (tested locally on 3.11.5; deep models on Google Colab)
+numpy>=1.26
+pandas>=2.2
+pyarrow>=15.0
+pyyaml>=6.0
+scipy>=1.11
+statsmodels>=0.14
+scikit-learn>=1.4
+lightgbm>=4.3
+optuna>=3.6
+shap>=0.45
+matplotlib>=3.8
+requests>=2.31
+pytest>=8.0
+# rung 4 (optional, GPU on Colab): torch>=2.2
