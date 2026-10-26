@@ -29,12 +29,17 @@ def tranche_order_usd() -> float:
 
 
 def one_way_cost(rank: pd.Series, daily_vol: pd.Series, adv_usd: pd.Series,
-                 order_usd: float | None = None) -> pd.Series:
-    """Fraction of notional paid to trade one way: fee + half-spread + vol * sqrt(order/ADV)."""
+                 order_usd=None, cost_mult: float = 1.0, spread_mult: float = 1.0) -> pd.Series:
+    """Fraction of notional paid to trade one way: fee + half-spread + vol * sqrt(order/ADV).
+
+    ``order_usd`` may be a scalar or per-name values; ``spread_mult`` stresses the half-spread
+    and ``cost_mult`` scales the whole cost (the sweep). Used by the triage cost gate and the
+    backtest engine alike, so both price trades the same way.
+    """
     c = setup()["costs"]
     order = order_usd if order_usd is not None else tranche_order_usd()
-    impact = daily_vol * np.sqrt(order / adv_usd)
-    return (c["taker_fee_bps"] + half_spread_bps(rank)) / 1e4 + impact
+    impact = daily_vol * np.sqrt(np.maximum(order, 0) / adv_usd)
+    return cost_mult * ((c["taker_fee_bps"] + half_spread_bps(rank) * spread_mult) / 1e4 + impact)
 
 
 def round_trip_cost(rank: pd.Series, daily_vol: pd.Series, adv_usd: pd.Series,

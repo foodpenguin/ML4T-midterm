@@ -20,7 +20,7 @@ import numpy as np
 import pandas as pd
 
 from .config import DAY, setup
-from .costs import half_spread_bps
+from . import costs
 from .universe import wide
 
 TRANCHES = 7
@@ -63,10 +63,10 @@ def build_market(bars: pd.DataFrame, settlements: pd.DataFrame, cost_inputs: pd.
 
 def one_way_cost(m: Market, t: int, idx: np.ndarray, order_usd: np.ndarray,
                  cost_mult: float = 1.0, spread_mult: float = 1.0) -> np.ndarray:
-    c = setup()["costs"]
-    hs = half_spread_bps(pd.Series(m.rank[t, idx])).to_numpy() * spread_mult
-    impact = m.vol[t, idx] * np.sqrt(np.maximum(order_usd, 0) / m.adv[t, idx])
-    return cost_mult * ((c["taker_fee_bps"] + hs) / 1e4 + impact)
+    """costs.one_way_cost on the market's day-t inputs for the names in ``idx``."""
+    return costs.one_way_cost(pd.Series(m.rank[t, idx]), pd.Series(m.vol[t, idx]),
+                              pd.Series(m.adv[t, idx]), np.asarray(order_usd),
+                              cost_mult, spread_mult).to_numpy()
 
 
 def _cap(w: np.ndarray, total: float, cap: float) -> np.ndarray:
@@ -159,22 +159,18 @@ def run(m: Market, scores: pd.DataFrame, start: str, end_exclusive: str, *,
             tw = target_weights(sc.loc[date], vol_df.loc[date], allocator, long_only)
             if len(tw):
                 new[m.symbols.get_indexer(tw.index)] = tw.to_numpy()
-        trade = np.abs(new - w[k]) / TRANCHES * scale
-        idx = np.nonzero(trade)[0]
+        # Trades, per name, as a fraction of capital: tranche k moves from its old weights at
+        # yesterday's scale to its new weights at today's scale; every other tranche only moves
+        # by the change in scale. Starting from an empty book, nothing is counted twice.
+        others = np.abs(np.delete(w, k, axis=0)).sum(axis=0)
+        trade = (np.abs(new * scale - w[k] * scale_prev) + others * abs(scale - scale_prev)) / TRANCHES
+        idx = np.nonzero(trade > 1e-15)[0]
         cost = 0.0
         if len(idx):
             c = one_way_cost(m, t, idx, trade[idx] * capital * equity, cost_mult, spread_mult)
             cost = float((trade[idx] * c).sum())
         w[k], entry[k] = new, np.where(new != 0, m.mark[t], 1.0)
-        # scale changes are trades on the whole book
         gross_book = np.abs(w).sum() / TRANCHES
-        if scale != scale_prev and gross_book > 0:
-            held = np.nonzero(np.abs(w).sum(axis=0))[0]
-            avg_c = float(one_way_cost(m, t, held, np.full(len(held), 1e3), cost_mult, spread_mult).mean())
-            cost += abs(scale - scale_prev) * gross_book * avg_c
-            trade_scale = abs(scale - scale_prev) * gross_book
-        else:
-            trade_scale = 0.0
         # 3) PnL from the open of t to the open of t+1
         dp = (m.mark[t + 1] - m.mark[t]) / entry
         per_name = (w * np.nan_to_num(dp)).sum(axis=0) / TRANCHES
@@ -188,7 +184,7 @@ def run(m: Market, scores: pd.DataFrame, start: str, end_exclusive: str, *,
         agg = w.sum(axis=0) / TRANCHES
         rows.append({"date": date, "ret": r, "gross": scale * (price + fund), "price": scale * price,
                      "funding": scale * fund, "cost": cost, "scale": scale,
-                     "turnover": float(trade.sum()) + trade_scale, "gross_exposure": scale * gross_book,
+                     "turnover": float(trade.sum()), "gross_exposure": scale * gross_book,
                      "net_exposure": scale * float(agg.sum()), "hhi": float((agg ** 2).sum() / max(np.abs(agg).sum(), 1e-12) ** 2),
                      "n_long": int((agg > 0).sum()), "n_short": int((agg < 0).sum()), "drawdown": dd,
                      "worst_name": m.symbols[worst_j], "worst_name_pnl": scale * float(per_name[worst_j])})
@@ -211,10 +207,15 @@ def btc_hold(m: Market, start: str, end_exclusive: str) -> pd.DataFrame:
                         index=m.dates[t0:t1])
 
 
+def drawdown_peak(eq: pd.Series) -> pd.Series:
+    """Running high-water mark of an equity curve that starts from capital 1.0."""
+    return pd.Series(np.maximum.accumulate(np.r_[1.0, eq.to_numpy()])[1:], index=eq.index)
+
+
 def metrics(daily: pd.DataFrame, periods: int = 365) -> dict:
     r = daily["ret"]
     eq = (1 + r).cumprod()
-    peak = eq.cummax()
+    peak = drawdown_peak(eq)
     dd = 1 - eq / peak
     under = dd > 0
     longest, cur = 0, 0

@@ -25,6 +25,7 @@ from crowding import backtest as bt  # noqa: E402
 from crowding import runlog, triage  # noqa: E402
 from crowding.config import ARTIFACTS, PROCESSED  # noqa: E402
 from crowding.io import load_daily_bars  # noqa: E402
+from crowding.ledger import trials_run  # noqa: E402
 from crowding.sample import load_sample  # noqa: E402
 from crowding.stats import deflated_sharpe, min_track_record_years, sharpe_ci  # noqa: E402
 
@@ -37,7 +38,7 @@ plt.rcParams.update({
     "axes.spines.top": False, "axes.spines.right": False, "axes.titlecolor": INK,
     "axes.titlesize": 10, "figure.dpi": 150,
 })
-N_TRIALS = 415
+N_TRIALS = trials_run()           # from ledger/research_ledger.csv, never typed in
 NOTES = " ".join(sys.argv[1:]) or "reports/backtest.md"
 
 
@@ -167,7 +168,7 @@ def main() -> None:
             eq = (1 + x).cumprod()
             regime.append({"vol_tercile": t, "btc_trend": "up" if up else "down", "days": len(x),
                            "sharpe": x.mean() / x.std() * np.sqrt(365), "ann_return": x.mean() * 365,
-                           "max_drawdown": float((1 - eq / eq.cummax()).max())})
+                           "max_drawdown": float((1 - eq / bt.drawdown_peak(eq)).max())})
     regime = pd.DataFrame(regime)
     regime.to_csv(REPORT / "backtest_regime.csv", index=False)
 
@@ -255,10 +256,15 @@ def main() -> None:
     figs["gross_net"] = "backtest_gross_net.png"
 
     fig, ax = plt.subplots(figsize=(7.5, 3))
-    for name, col in (("ridge EW", BLUE), ("ridge EW + vol target + kill switch", ORANGE)):
-        eq = (1 + runs[name].daily["ret"]).cumprod()
-        peak = np.maximum.accumulate(np.r_[1.0, eq.to_numpy()])[1:]
-        ax.plot(eq.index, -(1 - eq.to_numpy() / peak) * 100, color=col, lw=1.6, label=name)
+    eq = (1 + runs["ridge EW"].daily["ret"]).cumprod()
+    ax.plot(eq.index, -(1 - eq / bt.drawdown_peak(eq)) * 100, color=BLUE, lw=1.6, label="ridge EW")
+    # The ladder reads the engine's own drawdown, whose high-water mark resets after an unwind.
+    ks = runs["ridge EW + vol target + kill switch"].daily
+    ax.plot(ks.index, -ks["drawdown"] * 100, color=ORANGE, lw=1.6,
+            label="ridge EW + vol target + kill switch (drawdown the ladder acts on)")
+    flat = ks["scale"] == 0
+    ax.fill_between(ks.index, -50, 0, where=flat.to_numpy(), color=ORANGE, alpha=0.12, lw=0,
+                    label="flat after unwind")
     for rung in ladder:
         ax.axhline(-rung["drawdown"] * 100, color=INK, lw=0.7, ls="--")
         ax.text(head.index[0], -rung["drawdown"] * 100 + 0.4, f"{rung['action']} {rung['drawdown']:.0%}", fontsize=7.5, color=INK)
@@ -428,7 +434,9 @@ Vol target {0.20:.0%} annualized, using t−1 information. Kill-switch ladder fr
 
 ## 6. Sharpe as an estimate (validation period)
 
-Deflated Sharpe uses {N_TRIALS} trials: every ledger trial so far, the 331 prior-exposure trials included.
+**Trial count**: Deflated Sharpe uses {N_TRIALS} trials, read from `ledger/research_ledger.csv`. This is every family run so far, the 331 prior-exposure trials included; planned-only families are excluded.
+
+**Variance assumption**: the variance of Sharpe ratios across those trials is not observed, because most trials were IC screens and not backtests. The null sampling variance 1/T is used instead (`stats.deflated_sharpe`). `sr0_annual` is the Sharpe that the best of {N_TRIALS} zero-skill trials would reach under that assumption. A wider cross-trial dispersion would raise sr0 and lower every DSR.
 
 {md(inf)}
 

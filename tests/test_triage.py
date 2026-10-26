@@ -46,3 +46,39 @@ def test_residualize_is_orthogonal_to_control_ranks():
     res = residualize(d, "x", ["c"])
     for _, g in d.assign(res=res).groupby("date"):
         assert abs(stats.pearsonr(g["res"], g["c"].rank(pct=True)).statistic) < 1e-10
+
+
+def test_pit_terciles_match_naive_definition():
+    rng = np.random.default_rng(4)
+    s = pd.Series(rng.normal(size=500), index=pd.date_range("2022-01-01", periods=500))
+    s.iloc[::37] = np.nan
+    fast = pit_terciles(s, min_history=50)
+    naive = pd.Series(np.nan, index=s.index)
+    v = s.to_numpy()
+    for i in range(len(v)):
+        past = v[:i][~np.isnan(v[:i])]
+        if len(past) < 50 or np.isnan(v[i]):
+            continue
+        lo, hi = np.quantile(past, [1 / 3, 2 / 3])
+        naive.iloc[i] = 1 if v[i] <= lo else (3 if v[i] > hi else 2)
+    assert fast.equals(naive)
+
+
+def _row(**kw):
+    base = {"expected_sign": "-", "q_bh": 0.001, "ic_ci_low": -0.05, "ic_ci_high": -0.01, "ic_mean": -0.03,
+            "fold_sign_share": 0.8, "g1_pass": True, "placebo_ratio_lag21": 0.2, "g3_pass": True,
+            "monotone_rho": -1.0, "g4_pass": True}
+    return {**base, **kw}
+
+
+def test_decide_follows_registered_rules():
+    from crowding.triage import decide
+    assert decide(_row())[0] == "PROCEED"
+    assert decide(_row(q_bh=0.2))[0] == "STOP"
+    assert decide(_row(ic_ci_low=-0.01, ic_ci_high=0.02))[0] == "STOP"
+    d, why = decide(_row(ic_mean=0.03, ic_ci_low=0.01, ic_ci_high=0.05))
+    assert d == "REVISE" and "opposite sign" in why
+    assert decide(_row(expected_sign="0", ic_mean=0.03, ic_ci_low=0.01, ic_ci_high=0.05))[0] == "PROCEED"
+    assert decide(_row(g1_pass=False))[0] == "REVISE"
+    assert decide(_row(expected_sign="control"))[0] == "CONTROL"
+    assert decide(_row(expected_sign=""))[0] == "PROCEED"      # no sign claim is not a contradiction

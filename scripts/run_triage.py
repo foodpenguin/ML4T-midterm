@@ -24,6 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from crowding import runlog, triage  # noqa: E402
+from crowding.triage import decide, sign_of  # noqa: E402
 from crowding.config import PROCESSED, setup  # noqa: E402
 from crowding.costs import round_trip_cost  # noqa: E402
 from crowding.features import FEATURES  # noqa: E402
@@ -41,14 +42,6 @@ plt.rcParams.update({
     "axes.titlesize": 10, "figure.dpi": 150,
 })
 CONTROLS_FOR_SHARED_DRIVER = ["rvol_20d", "log_adv_30d", "ret_21d", "beta_60d"]
-
-
-def sign_of(expected: str, ic_mean: float) -> int:
-    if expected == "-":
-        return -1
-    if expected == "+":
-        return 1
-    return int(np.sign(ic_mean)) or 1
 
 
 def fold_ids(dates: pd.Series) -> pd.Series:
@@ -102,26 +95,6 @@ def gate_row(smp, panel, f, expected, cfg, fold_of_date) -> dict:
     row["g4_threshold"] = 2 * 2 * churn * c_rt
     row["g4_pass"] = row["signed_spread_7d"] >= row["g4_threshold"]
     return row
-
-
-def decide(r: dict) -> tuple[str, str]:
-    if r["expected_sign"] == "control":
-        return "CONTROL", "prior-exposure control; no claim"
-    g2_sig = r["q_bh"] < 0.05 and not (r["ic_ci_low"] <= 0 <= r["ic_ci_high"])
-    if not g2_sig:
-        return "STOP", "no detectable association (BH q >= 0.05 or CI spans 0)"
-    reasons = []
-    if r["expected_sign"] in "+-" and np.sign(r["ic_mean"]) != sign_of(r["expected_sign"], 0):
-        reasons.append("significant with the opposite sign: mechanism contradicted")
-    if r["fold_sign_share"] < 0.6:
-        reasons.append(f"fold sign share {r['fold_sign_share']:.2f} < 0.60")
-    if not r["g1_pass"]:
-        reasons.append(f"timing placebo keeps {r['placebo_ratio_lag21']:.0%} of IC at lag 21 (slow state proxy)")
-    if not r["g3_pass"]:
-        reasons.append(f"quintiles not monotone (rho {r['monotone_rho']:.2f})")
-    if not r["g4_pass"]:
-        reasons.append("gross spread below 2x implied trading cost")
-    return ("REVISE", "; ".join(reasons)) if reasons else ("PROCEED", "all gates pass")
 
 
 def market_state_rows(smp, cfg) -> list[dict]:

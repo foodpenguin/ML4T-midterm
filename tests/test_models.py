@@ -56,3 +56,22 @@ def test_conformal_quantile_covers_nominal_share():
     cal, test = rng.normal(size=2000), rng.normal(size=20000)
     q = models.conformal_q(cal, 0.8)
     assert 0.77 < (np.abs(test) <= q).mean() < 0.83
+
+
+def test_deployed_rung_climbs_only_on_paired_ci_above_zero():
+    rng = np.random.default_rng(7)
+    idx = pd.date_range("2023-01-01", periods=600)
+    base = pd.Series(rng.normal(0.02, 0.05, 600), index=idx)
+    better = base + 0.05
+    same = base + rng.normal(0, 0.01, 600)
+    assert models.deployed_rung({"rule_carry": base, "ridge": better, "lightgbm": better + 0.0}) == "ridge"
+    assert models.deployed_rung({"rule_carry": base, "ridge": same, "lightgbm": better}) == "lightgbm"
+    assert models.deployed_rung({"rule_carry": base, "ridge": same, "lightgbm": same}) == "rule_carry"
+
+
+def test_conformal_interval_is_built_around_the_calibrated_model(panel):
+    pred, *_ = models.run_ridge(panel)
+    assert {"pred", "pred_inner", "q80", "q90"} <= set(pred.columns)
+    d = pred.merge(panel[["date", "symbol", "target"]], on=["date", "symbol"])
+    cov80 = ((d["target"] - d["pred_inner"]).abs() <= d["q80"]).mean()
+    assert 0.75 < cov80 < 0.85                      # exchangeable synthetic data: near nominal

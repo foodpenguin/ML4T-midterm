@@ -18,6 +18,7 @@ from sklearn.preprocessing import StandardScaler
 
 from .config import ROOT
 from .splits import folds, train_mask, val_mask
+from .stats import paired_delta
 from .triage import xs_ic
 
 
@@ -60,10 +61,19 @@ def conformal_q(residuals: np.ndarray, coverage: float) -> float:
     return float(r[k])
 
 
-def _out(val: pd.DataFrame, fold: int, pred: np.ndarray, q: dict[float, float]) -> pd.DataFrame:
+def _out(val: pd.DataFrame, fold: int, pred: np.ndarray, q: dict[float, float],
+         pred_inner: np.ndarray | None = None) -> pd.DataFrame:
+    """Out-of-fold rows. ``pred`` (refit on the full window) is the point prediction.
+
+    Split conformal is valid only for the model whose residuals set the quantile, i.e. the
+    inner-window model, which never saw its calibration window; so the interval is
+    ``pred_inner +/- q`` and coverage is measured around ``pred_inner``.
+    """
     o = val[["date", "symbol"]].copy()
     o["fold"] = fold
     o["pred"] = pred
+    if pred_inner is not None:
+        o["pred_inner"] = pred_inner
     for cov, qq in q.items():
         o[f"q{int(cov * 100)}"] = qq
     return o
@@ -109,7 +119,7 @@ def run_ridge(smp: pd.DataFrame):
             p = m.predict(fr["val"][X])
             surface.append(_out(fr["val"], f.fold, p, {}).assign(alpha=a))
             if a == best:
-                outs.append(_out(fr["val"], f.fold, p, q))
+                outs.append(_out(fr["val"], f.fold, p, q, inner_models[best].predict(fr["val"][X])))
                 z = (fr["val"][X].to_numpy() - m[0].mean_) / m[0].scale_
                 contribs.append(pd.concat([fr["val"][["date", "symbol"]].reset_index(drop=True),
                                            pd.DataFrame(z * m[-1].coef_, columns=X)], axis=1)
@@ -184,10 +194,22 @@ def run_lgbm(smp: pd.DataFrame, best: dict) -> tuple[pd.DataFrame, pd.DataFrame,
         q = {c: conformal_q(res.to_numpy(), c) for c in (0.8, 0.9)}
         model = fit_lgbm(params, fr["train"], None, n_rounds=n)
         p = model.predict(fr["val"][X])
-        outs.append(_out(fr["val"], f.fold, p, q))
+        outs.append(_out(fr["val"], f.fold, p, q, inner.predict(fr["val"][X], num_iteration=n)))
         sh = model.predict(fr["val"][X], pred_contrib=True)[:, :-1]
         contribs.append(pd.concat([fr["val"][["date", "symbol"]].reset_index(drop=True),
                                    pd.DataFrame(sh, columns=X)], axis=1).assign(fold=f.fold))
         info.append({"fold": f.fold, "n_rounds": n, "inner_ic": mean_ic(
             fr["inner_val"], inner.predict(fr["inner_val"][X], num_iteration=n))})
     return pd.concat(outs, ignore_index=True), pd.concat(contribs, ignore_index=True), pd.DataFrame(info)
+
+
+def deployed_rung(ics: dict[str, pd.Series], ladder=("rule_carry", "ridge", "lightgbm"),
+                  horizon: int = 7) -> str:
+    """Registered rule (config/models.yaml): climb from the first rung, moving to the next only
+    if its paired daily-IC difference against the currently deployed rung has a NW 95% CI
+    entirely above zero."""
+    deployed = ladder[0]
+    for cand in ladder[1:]:
+        if paired_delta(ics[cand], ics[deployed], horizon)["ci_low"] > 0:
+            deployed = cand
+    return deployed

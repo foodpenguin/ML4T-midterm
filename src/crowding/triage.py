@@ -75,17 +75,16 @@ def extreme_churn(df: pd.DataFrame, x: str, horizon: int = 7, q: int = 5) -> flo
 
 
 def pit_terciles(state: pd.Series, min_history: int = 180) -> pd.Series:
-    """Tercile (1..3) of each date's state value against its own past only."""
-    s = state.sort_index()
-    out = pd.Series(np.nan, index=s.index)
-    vals = s.values
-    for i in range(min_history, len(s)):
-        past = vals[:i][~np.isnan(vals[:i])]
-        if len(past) < min_history or np.isnan(vals[i]):
-            continue
-        lo, hi = np.quantile(past, [1 / 3, 2 / 3])
-        out.iloc[i] = 1 if vals[i] <= lo else (3 if vals[i] > hi else 2)
-    return out
+    """Tercile (1..3) of each date's state value against its own past only.
+
+    Thresholds are the 1/3 and 2/3 quantiles (linear interpolation) of all earlier non-missing
+    values; a date needs ``min_history`` of them.
+    """
+    s = state.sort_index().astype(float)
+    past = s.shift(1).expanding(min_periods=min_history)
+    lo, hi = past.quantile(1 / 3), past.quantile(2 / 3)
+    out = pd.Series(np.where(s <= lo, 1.0, np.where(s > hi, 3.0, 2.0)), index=s.index)
+    return out.where(lo.notna() & s.notna())
 
 
 def residualize(df: pd.DataFrame, x: str, controls: list[str]) -> pd.Series:
@@ -128,3 +127,33 @@ def redundancy_clusters(df: pd.DataFrame, cols: list[str], cut: float,
     np.fill_diagonal(dist, 0)
     labels = fcluster(linkage(squareform(dist, checks=False), "complete"), 1 - cut, "distance")
     return pd.Series(labels, index=cols, name="cluster"), pd.DataFrame(rho, index=cols, columns=cols)
+
+
+def sign_of(expected: str, ic_mean: float) -> int:
+    """Direction a feature is scored in: the registered sign, or the observed one for "0"."""
+    if expected == "-":
+        return -1
+    if expected == "+":
+        return 1
+    return int(np.sign(ic_mean)) or 1
+
+
+def decide(r: dict) -> tuple[str, str]:
+    """Registered triage decision (config/triage.yaml -> decision_rule) for one feature row."""
+    if r["expected_sign"] == "control":
+        return "CONTROL", "prior-exposure control; no claim"
+    g2_sig = r["q_bh"] < 0.05 and not (r["ic_ci_low"] <= 0 <= r["ic_ci_high"])
+    if not g2_sig:
+        return "STOP", "no detectable association (BH q >= 0.05 or CI spans 0)"
+    reasons = []
+    if r["expected_sign"] in ("+", "-") and np.sign(r["ic_mean"]) != sign_of(r["expected_sign"], 0):
+        reasons.append("significant with the opposite sign: mechanism contradicted")
+    if r["fold_sign_share"] < 0.6:
+        reasons.append(f"fold sign share {r['fold_sign_share']:.2f} < 0.60")
+    if not r["g1_pass"]:
+        reasons.append(f"timing placebo keeps {r['placebo_ratio_lag21']:.0%} of IC at lag 21 (slow state proxy)")
+    if not r["g3_pass"]:
+        reasons.append(f"quintiles not monotone (rho {r['monotone_rho']:.2f})")
+    if not r["g4_pass"]:
+        reasons.append("gross spread below 2x implied trading cost")
+    return ("REVISE", "; ".join(reasons)) if reasons else ("PROCEED", "all gates pass")

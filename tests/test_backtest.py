@@ -97,3 +97,40 @@ def test_backtest_refuses_holdout_pnl(monkeypatch):
         **config.setup()["evaluation"], "holdout": {"start": "2023-03-10"}}})
     with pytest.raises(AssertionError):
         bt.run(m, pd.DataFrame(columns=["date", "symbol", "score"]), "2023-03-01", "2023-03-15")
+
+
+def test_first_day_is_charged_once():
+    """Building the first tranche from an empty book trades exactly that tranche's gross."""
+    bars, sets, cost_in = synthetic_market()
+    m = bt.build_market(bars, sets, cost_in)
+    syms = sorted(bars["symbol"].unique())
+    dates = pd.date_range("2023-03-01", "2023-03-20")
+    scores = pd.DataFrame([(d, s, float(i)) for d in dates for i, s in enumerate(syms)],
+                          columns=["date", "symbol", "score"])
+    res = bt.run(m, scores, "2023-03-01", "2023-03-20")
+    assert np.isclose(res.daily["turnover"].iloc[0], 1.0 / bt.TRANCHES)
+    assert np.isclose(res.daily["turnover"].iloc[:7].sum(), 1.0)
+
+
+def test_pure_scale_change_trades_only_the_difference():
+    """Static book, exposure halved by the ladder: the trade is half the book, once."""
+    bars, sets, cost_in = synthetic_market(seed=5)
+    m = bt.build_market(bars, sets, cost_in)
+    syms = sorted(bars["symbol"].unique())
+    dates = pd.date_range("2023-03-01", "2023-04-25")
+    scores = pd.DataFrame([(d, s, float(i)) for d in dates for i, s in enumerate(syms)],
+                          columns=["date", "symbol", "score"])
+    ladder = [{"drawdown": 0.0001, "action": "halve", "exposure_multiplier": 0.5}]
+    d = bt.run(m, scores, "2023-03-01", "2023-04-25", kill_switch=ladder).daily
+    after_build = d.iloc[7:]
+    change = after_build["scale"].diff().abs() > 0
+    expected = after_build["scale"].diff().abs() * after_build["gross_exposure"] / after_build["scale"]
+    assert np.allclose(after_build.loc[change, "turnover"], expected[change])
+    assert np.allclose(after_build.loc[~change, "turnover"].iloc[1:], 0.0)
+
+
+def test_metrics_drawdown_starts_from_initial_capital():
+    daily = pd.DataFrame({"ret": [-0.10, -0.10, 0.05]},
+                         index=pd.date_range("2024-01-01", periods=3))
+    mt = bt.metrics(daily)
+    assert np.isclose(mt["max_drawdown"], 1 - 0.9 * 0.9)

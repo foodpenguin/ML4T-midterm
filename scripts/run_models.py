@@ -36,6 +36,7 @@ plt.rcParams.update({
     "axes.titlesize": 10, "figure.dpi": 150,
 })
 RUNGS = ["rule_carry", "ridge", "lightgbm"]
+NOTES = " ".join(sys.argv[1:]) or "reports/models.md"
 COLORS = dict(zip(RUNGS, [MUTED, BLUE, ORANGE]))
 
 
@@ -55,8 +56,9 @@ def evaluate(pred: pd.DataFrame, smp: pd.DataFrame) -> tuple[dict, pd.Series]:
     sp = triage.nw_stats(spread, 7)
     out["q5_q1_mean_7d"], out["q5_q1_t"] = sp["mean"], sp["t"]
     if "q80" in d:
-        cov = d.assign(c80=(d["target"] - d["pred"]).abs() <= d["q80"],
-                       c90=(d["target"] - d["pred"]).abs() <= d["q90"]).groupby("fold")[["c80", "c90"]].mean()
+        # intervals belong to the inner-window model that produced the calibration residuals
+        res = (d["target"] - d["pred_inner"]).abs()
+        cov = d.assign(c80=res <= d["q80"], c90=res <= d["q90"]).groupby("fold")[["c80", "c90"]].mean()
         out["coverage80_mean"], out["coverage90_mean"] = float(cov["c80"].mean()), float(cov["c90"].mean())
         out["folds_below_80"] = int((cov["c80"] < 0.8).sum())
         out["_coverage"] = cov
@@ -202,11 +204,7 @@ def main() -> None:
              "lightgbm - ridge": paired(ics["lightgbm"][0], ics["ridge"][0]),
              "lightgbm - rule_carry": paired(ics["lightgbm"][0], ics["rule_carry"][0])}
 
-    deployed = "rule_carry"
-    for cand in ("ridge", "lightgbm"):
-        p = paired(ics[cand][0], ics[deployed][0])
-        if p["ci_low"] > 0:
-            deployed = cand
+    deployed = models.deployed_rung({k: v[0] for k, v in ics.items()})
     print(f"deployed: {deployed}", flush=True)
 
     ridge_sh = shap_summary(ridge_shap, smp, models.ridge_columns())
@@ -236,7 +234,7 @@ def main() -> None:
         conf = {"model": k, "features": cfg["features"], "lgbm_params": best if k == "lightgbm" else None}
         runlog.append(fam, trial, conf, window, splits, {**r, "n_trials": n},
                       decision="deployed" if k == deployed else "not deployed",
-                      gate="paired NW CI vs deployed", notes="reports/models.md")
+                      gate="paired NW CI vs deployed", notes=NOTES)
     print(json.dumps({k: round(results[k]["ic_mean"], 4) for k in results}), deployed)
 
 
@@ -322,7 +320,9 @@ SHAP describes the fitted models. It is not causal (see the DAGs in `reports/tri
 
 ## 6. Uncertainty (split conformal)
 
-**Calibration**: each fold's inner window. **Interval**: prediction ± the conformal quantile of |target − prediction|, on the rank target.
+**Calibration**: each fold's inner window (the last 3 months of its training data). The inner-window model never saw that window, so its residuals are valid calibration scores.
+**Interval**: the inner-window model's prediction ± the conformal quantile of |target − prediction|, on the rank target.
+**Coverage**: measured around that same model. Point predictions and IC come from the model refit on the full window.
 
 ![coverage ridge](figures/{cov_figs['ridge']})
 

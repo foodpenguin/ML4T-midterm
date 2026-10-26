@@ -78,3 +78,11 @@ def test_checklist_status_requires_tests_to_run_and_pass():
 def test_config_hash_tolerates_non_string_keys():
     from crowding.runlog import config_hash
     assert config_hash({None: 1, "a": 2}) == config_hash({"None": 1, "a": 2})
+
+
+def test_ledger_trial_count_excludes_planned(tmp_path):
+    from crowding.ledger import trials_run
+    p = tmp_path / "l.csv"
+    p.write_text("strategy,family,trial,description,n_trials,status,registered_utc,notes\n"
+                 "s,F0,a,x,10,closed,d,\ns,F1,b,x,5,registered,d,\ns,F5,c,x,20,planned_optional,d,\n")
+    assert trials_run(p) == 15
