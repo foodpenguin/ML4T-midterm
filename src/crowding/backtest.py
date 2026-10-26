@@ -177,7 +177,9 @@ def run(m: Market, scores: pd.DataFrame, start: str, end_exclusive: str, *,
             trade_scale = 0.0
         # 3) PnL from the open of t to the open of t+1
         dp = (m.mark[t + 1] - m.mark[t]) / entry
-        price = float((w * np.nan_to_num(dp)).sum() / TRANCHES)
+        per_name = (w * np.nan_to_num(dp)).sum(axis=0) / TRANCHES
+        price = float(per_name.sum())
+        worst_j = int(np.argmin(per_name))
         fund = float(-(w * m.funding[t]).sum() / TRANCHES)
         base_hist.append(price + fund)         # unscaled book return: what the vol target reads
         r = scale * (price + fund) - cost
@@ -188,7 +190,8 @@ def run(m: Market, scores: pd.DataFrame, start: str, end_exclusive: str, *,
                      "funding": scale * fund, "cost": cost, "scale": scale,
                      "turnover": float(trade.sum()) + trade_scale, "gross_exposure": scale * gross_book,
                      "net_exposure": scale * float(agg.sum()), "hhi": float((agg ** 2).sum() / max(np.abs(agg).sum(), 1e-12) ** 2),
-                     "n_long": int((agg > 0).sum()), "n_short": int((agg < 0).sum()), "drawdown": dd})
+                     "n_long": int((agg > 0).sum()), "n_short": int((agg < 0).sum()), "drawdown": dd,
+                     "worst_name": m.symbols[worst_j], "worst_name_pnl": scale * float(per_name[worst_j])})
         if (t - t0) % 28 == 0:
             samples.append((date, pd.Series(agg, index=m.symbols)[agg != 0]))
         scale_prev = scale
