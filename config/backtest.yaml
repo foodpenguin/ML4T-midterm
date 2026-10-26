@@ -1,0 +1,71 @@
+# W5 backtest registration (ML4T Ch. 16-19). Committed before any backtest was run.
+registered_utc: "2026-10-27"
+period:
+  start: "2023-03-01"          # first walk-forward validation month (out-of-fold predictions exist)
+  end_exclusive: "2025-10-25"  # holdout start: no PnL from holdout prices
+  rule_extended_start: "2022-03-01"   # rule_carry needs no fitting, so it also runs over 2022
+
+engine: >
+  Custom daily loop. Positions are 7 staggered tranches (setup.yaml mapping), held as fixed
+  notional from the entry open, marked at each 00:00 open; delisted names exit at their last
+  close (same convention as the labels). Funding is charged per settlement in (t, t+1] on
+  entry notional. Overlays and the kill-switch are path-dependent, so they run inside the loop
+  using information up to t-1.
+
+signals:
+  ridge: "out-of-fold predictions, artifacts/predictions/ridge.parquet (deployed model, W4)"
+  rule_carry: "-rank(fund_7d) within date (rung 1)"
+mapping: "per tranche: top 20% long, bottom 20% short, 0.5 gross per leg, max 10% of gross per name"
+
+allocators:
+  null: equal_weight
+  comparison: "inverse_vol: weight within a leg proportional to 1 / rvol_20d (t-1), same signal, same 20-day window"
+  headline: equal_weight       # fixed now; not chosen by result
+
+benchmarks:
+  ew_universe: "long-only equal weight of the in-universe names, same 7-tranche protocol, pays funding and costs"
+  btc_hold: "long BTCUSDT perpetual, pays funding, one entry cost"
+
+costs:
+  model: "setup.yaml costs (taker 5 bp + half-spread tier + vol * sqrt(order / ADV)), per name, on traded notional"
+  capital_usd: 100000
+  sweep_multiples: [0, 0.5, 1, 2, 3, 4]
+  break_even: "c* = annualized gross return / annualized two-way turnover (bp per leg)"
+  regime: "hard floor if c*/c_assumed < 1, gray zone if 1-2, comfortable if > 2 (Ch. 6)"
+
+overlay:
+  vol_target: "exposure scale s_t = min(1, 0.20 / (annualized 30-day realized vol of the strategy up to t-1)); s = 1 until 20 days of history"
+  report: "with and without, same signal, same costs (scale changes are charged as turnover)"
+
+kill_switch:
+  measure: "drawdown of the overlaid equity from its high-water mark, through t-1"
+  ladder:
+    - {drawdown: 0.05, action: watch, exposure_multiplier: 1.0}
+    - {drawdown: 0.10, action: halve, exposure_multiplier: 0.5}
+    - {drawdown: 0.15, action: halt, exposure_multiplier: 0.25}
+    - {drawdown: 0.20, action: unwind, exposure_multiplier: 0.0}
+  re_entry: "after unwind: flat for 30 days, then the high-water mark is reset to current equity"
+  owner: "strategy owner (student team); in production a risk officer"
+
+risk:
+  var_cvar: "historical 95% daily VaR and CVaR, overall and by point-in-time BTC-vol tercile"
+  drawdown: "max depth, longest duration, recovery time"
+  beta: "rolling 60-day beta to BTC and to the EW benchmark"
+  stress:
+    amendment: >
+      setup.yaml registered 2022-05 LUNA and 2022-11 FTX. Both predate the out-of-fold window
+      (2023-03 on), so they are run for rule_carry only (extended start). Ridge is stressed on
+      two events chosen by date, before any backtest: 2024-08-05 (yen carry unwind) and
+      2025-10-10 (liquidation cascade). Window: event - 7 days to event + 14 days.
+    episodes:
+      luna: "2022-05-09"
+      ftx: "2022-11-08"
+      yen_unwind: "2024-08-05"
+      liquidation_cascade: "2025-10-10"
+    stressed_costs: "half-spread x 3"
+  regime_slice: "3 PIT terciles of BTC rvol_20d x 2 trend states (BTC 21-day return > 0); one definition only"
+
+inference:
+  sharpe_ci: "SE ~ sqrt((1 + SR^2/2) / T), daily, annualized with 365"
+  deflated_sharpe: "n_trials = all ledger trials run so far (prior 331 + F1 1 + F2 24 + F3 9 + F4 50 = 415)"
+  min_track_record: "alpha 0.05, power 0.80"

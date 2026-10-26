@@ -148,6 +148,12 @@ amendments:   # changes to v1 made before any backtest; none was based on a resu
       2022-Q1..Q4 and empty taker ratios for 2022-Q1..Q2 (files present, values empty), found
       by the data-quality pass (reports/data_quality.md section 5). OI and the all-account
       ratio are complete from 2022-Q1, so dev_start stays 2022-03-01.
+  - date: "2026-10-27"
+    change: risk.stress_episodes extended (config/backtest.yaml)
+    reason: >
+      The registered 2022 episodes (LUNA, FTX) predate the out-of-fold prediction window
+      (2023-03 on). They are kept for the rule baseline; the deployed model is stressed on
+      2024-08-05 and 2025-10-10, chosen by date before any backtest.
 
 models:
   ladder:
