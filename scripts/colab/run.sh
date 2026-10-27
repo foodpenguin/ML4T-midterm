@@ -1,5 +1,4 @@
 #!/bin/bash
-# usage: run.sh <script.py>   (runs a local helper on the ml4t-deep VM)
-C=/mnt/d/penguin_data/code/Web3_Auditor/tools/colab_qwen_audit/.cli-venv/bin/colab
-D=/mnt/d/penguin_data/code/quantitative_trading_course/ML4T_Midterm/scripts/colab
-$C exec -s ml4t-deep -f $D/$1 2>&1 | grep -v -i "update\|available\|silence"
+# usage: run.sh <helper.py>   runs a helper from scripts/colab on the VM
+source "$(dirname "$0")/env.sh"
+"$C" exec -s "$S" -f "$R/scripts/colab/$1" 2>&1 | quiet

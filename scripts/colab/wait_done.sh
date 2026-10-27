@@ -1,11 +1,12 @@
 #!/bin/bash
-D=/mnt/d/penguin_data/code/quantitative_trading_course/ML4T_Midterm/artifacts/deep/colab
-for i in $(seq 1 120); do
-  out=$(bash $D/run.sh poll.py)
+# Poll every 2 minutes until all runs are DONE (exit 0) or the training process dies (exit 2).
+source "$(dirname "$0")/env.sh"
+for i in $(seq 1 180); do
+  out=$(bash "$R/scripts/colab/run.sh" poll.py)
   line=$(echo "$out" | grep "alive:")
-  echo "$(date +%H:%M:%S) $line $(echo "$out" | grep -E '^\[.*fold' | tail -1)"
-  echo "$line" | grep -q "DONE: True" && { echo "$out" | tail -6; exit 0; }
-  echo "$line" | grep -q "alive: False" && { echo "$out" | tail -12; exit 2; }
+  echo "$(date +%H:%M:%S) $line"
+  echo "$line" | grep -q "DONE: True" && { echo "$out" | tail -8; exit 0; }
+  echo "$line" | grep -q "alive: False" && { echo "$out" | tail -14; exit 2; }
   sleep 120
 done
 exit 3

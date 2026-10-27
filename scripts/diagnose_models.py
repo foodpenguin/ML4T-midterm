@@ -22,34 +22,13 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from crowding import models, triage  # noqa: E402
+from crowding.evaluation import quintile_profile  # noqa: E402
 from crowding.config import ARTIFACTS  # noqa: E402
 from crowding.features import FEATURES  # noqa: E402
 from crowding.sample import load_sample  # noqa: E402
 
 PRED = ARTIFACTS / "predictions"
 REPORT = ROOT / "reports"
-
-
-def quintile_profile(pred: pd.DataFrame, smp: pd.DataFrame) -> pd.DataFrame:
-    d = pred.merge(smp[["date", "symbol", "y_total_7d"]], on=["date", "symbol"])
-    d["yd"] = d["y_total_7d"] - d.groupby("date")["y_total_7d"].transform("mean")
-    lo, hi = d["yd"].quantile([0.01, 0.99])
-    d["yw"] = d["yd"].clip(lo, hi)
-    pct = d.groupby("date")["pred"].rank(pct=True)
-    d["q"] = np.ceil(pct * 5).clip(1, 5).astype(int)
-    out = d.groupby("q").agg(mean_bp=("yd", "mean"), median_bp=("yd", "median"),
-                             winsor_mean_bp=("yw", "mean"), p99_bp=("yd", lambda x: x.quantile(0.99)),
-                             skew=("yd", "skew"), n=("yd", "size"))
-    for c in ("mean_bp", "median_bp", "winsor_mean_bp", "p99_bp"):
-        out[c] *= 1e4
-    spread = {}
-    for k, col in (("mean", "yd"), ("winsorized mean", "yw")):
-        s = d.groupby(["date", "q"])[col].mean().unstack()
-        spread[k] = triage.nw_stats((s[5] - s[1]).dropna(), 7)
-    med = d.groupby(["date", "q"])["yd"].median().unstack()
-    spread["median"] = triage.nw_stats((med[5] - med[1]).dropna(), 7)
-    out.attrs["spread"] = spread
-    return out
 
 
 def family_of(col: str) -> str:

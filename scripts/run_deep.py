@@ -32,12 +32,13 @@ def static_columns() -> list[str]:
 
 def prepare() -> None:
     from crowding.io import load_metrics
-    from crowding.sample import load_sample
+    from crowding.sample import load_sample, period_bounds
     from crowding.sequences import build_sequences
     DEEP.mkdir(parents=True, exist_ok=True)
     smp = load_sample("dev", horizon=7)
     metrics = load_metrics(columns=["oi", "global_acct_lsr", "top_pos_lsr", "taker_lsvr_1h"])
-    metrics = metrics[metrics["ts"] < pd.Timestamp("2025-10-25")]       # dev decisions only
+    holdout_start = period_bounds()["holdout"][0]
+    metrics = metrics[metrics["ts"] < holdout_start]                   # dev decisions only
     t0 = time.time()
     X, mask = build_sequences(metrics, smp[["date", "symbol"]])
     print(f"sequences {X.shape} in {time.time() - t0:.0f}s; observed share {mask.mean():.3f}")
@@ -122,11 +123,9 @@ def train(data: Path, out: Path, smoke: bool, variant: str = "grid", tuned_from:
 
 
 def evaluate() -> None:
-    import importlib.util
-    spec = importlib.util.spec_from_file_location("deep_evaluate", ROOT / "scripts" / "deep_evaluate.py")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    mod.main()
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import deep_evaluate
+    deep_evaluate.main()
 
 
 if __name__ == "__main__":

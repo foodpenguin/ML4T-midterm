@@ -39,13 +39,6 @@ def fit_scaling(d: DeepData, train_rows: np.ndarray) -> dict:
     return {"mu": mu, "sd": np.where(sd > 0, sd, 1.0), "smu": smu, "ssd": np.where(ssd > 0, ssd, 1.0)}
 
 
-def scaled_tensors(d: DeepData, sc: dict, device) -> tuple[torch.Tensor, torch.Tensor]:
-    x = (d.X - sc["mu"]) / sc["sd"]
-    x = np.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
-    x = np.concatenate([x, d.mask[..., None].astype(np.float32)], axis=2)
-    s = np.nan_to_num((d.static - sc["smu"]) / sc["ssd"], nan=0.0)
-    dtype = torch.float16 if device.type == "cuda" else torch.float32
-    return torch.tensor(x, dtype=dtype, device=device), torch.tensor(s, dtype=dtype, device=device)
 
 
 def date_groups(meta: pd.DataFrame, rows: np.ndarray) -> list[np.ndarray]:
@@ -148,18 +141,37 @@ def config_from_row(row) -> "Config":
 
 
 class Trainer:
+    """Raw inputs live on the device once; ``prepare`` only refits the per-channel scaling,
+    which is applied to each gathered batch."""
+
     def __init__(self, d: DeepData, device):
         self.d, self.device = d, device
+        dtype = torch.float16 if device.type == "cuda" else torch.float32
+        self.X = torch.tensor(d.X, dtype=dtype, device=device)            # NaN kept for missing
+        self.M = torch.tensor(d.mask, dtype=dtype, device=device)
+        self.S = torch.tensor(d.static, dtype=dtype, device=device)
         self.target = torch.tensor(d.meta["target"].to_numpy(np.float32), device=device)
+        self.in_ch = d.X.shape[-1] + 1                                     # channels + observed mask
+        self.scaled_on: np.ndarray | None = None
 
     def prepare(self, train_rows):
+        """Fit scaling on ``train_rows`` only (they must be the rows the next fit trains on)."""
         sc = fit_scaling(self.d, train_rows)
-        self.X, self.S = scaled_tensors(self.d, sc, self.device)
+        t = lambda a: torch.tensor(a, dtype=torch.float32, device=self.device)  # noqa: E731
+        self.mu, self.sd, self.smu, self.ssd = t(sc["mu"]), t(sc["sd"]), t(sc["smu"]), t(sc["ssd"])
+        self.scaled_on = np.asarray(train_rows)
+
+    def _inputs(self, gi):
+        x = torch.nan_to_num((self.X[gi].float() - self.mu) / self.sd, nan=0.0, posinf=0.0, neginf=0.0)
+        x = torch.cat([x, self.M[gi].float().unsqueeze(-1)], dim=-1)
+        s = torch.nan_to_num((self.S[gi].float() - self.smu) / self.ssd, nan=0.0)
+        return x, s
 
     def _forward(self, model, groups):
         gi, pad = batch_index(groups, self.device)
+        x, s = self._inputs(gi)
         with torch.autocast(self.device.type, dtype=torch.bfloat16, enabled=self.device.type == "cuda"):
-            out = model(self.X[gi].float(), self.S[gi].float(), pad)
+            out = model(x, s, pad)
         return out.float(), gi, pad
 
     def predict(self, model, rows: np.ndarray) -> np.ndarray:
@@ -184,7 +196,7 @@ class Trainer:
         """Train; with ``val_rows`` early-stop on mean daily IC and return the best epoch count."""
         torch.manual_seed(seed)
         np.random.seed(seed)
-        model = CrowdingNet(self.X.shape[-1], self.S.shape[-1], cfg.width, cfg.dropout,
+        model = CrowdingNet(self.in_ch, self.S.shape[-1], cfg.width, cfg.dropout,
                             cfg.xs_layers, cfg.use_sequence).to(self.device)
         opt = torch.optim.AdamW(model.parameters(), lr=cfg.learning_rate, weight_decay=cfg.weight_decay)
         groups = date_groups(self.d.meta, train_rows)
@@ -284,12 +296,17 @@ def run_folds(tr: Trainer, cfg: Config, seeds: int = 5, only=None, log=print) ->
         r_itr = np.nonzero(train_mask(d, e, f, inner=True).to_numpy())[0]
         r_iva = np.nonzero(val_mask(d, e, f, inner=True).to_numpy())[0]
         r_va = np.nonzero(val_mask(d, e, f).to_numpy())[0]
-        tr.prepare(r_tr)
+        # Inner model: scaling fitted on the inner training rows only, so its early stopping and
+        # conformal calibration on the inner window never see that window's statistics.
+        tr.prepare(r_itr)
         inner, n_ep, inner_ic = tr.fit(cfg, r_itr, seed=0, val_rows=r_iva)
         n_ep = max(n_ep, 1)
         res = m["target"].to_numpy()[r_iva] - tr.predict(inner, r_iva)
         q80, q90 = conformal_q(res, 0.8), conformal_q(res, 0.9)
         pred_inner = tr.predict(inner, r_va)
+        # Refits: scaling refitted on the full training window they train on.
+        # Registered design: the epoch count comes from the single seed-0 inner run (see report).
+        tr.prepare(r_tr)
         preds = [tr.predict(tr.fit(cfg, r_tr, seed=s, epochs=n_ep)[0], r_va) for s in range(seeds)]
         o = m.iloc[r_va][["date", "symbol"]].copy()
         o["fold"], o["pred"], o["pred_inner"], o["q80"], o["q90"] = f.fold, np.mean(preds, axis=0), pred_inner, q80, q90

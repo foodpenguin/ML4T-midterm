@@ -36,3 +36,25 @@ def paired(ic_a: pd.Series, ic_b: pd.Series) -> dict:
     d = (ic_a - ic_b).dropna()
     s = triage.nw_stats(d, 7)
     return {"delta_ic": s["mean"], "ci_low": s["ci_low"], "ci_high": s["ci_high"], "nw_t": s["t"], "n_days": s["n"]}
+
+
+def quintile_profile(pred: pd.DataFrame, smp: pd.DataFrame) -> pd.DataFrame:
+    d = pred.merge(smp[["date", "symbol", "y_total_7d"]], on=["date", "symbol"])
+    d["yd"] = d["y_total_7d"] - d.groupby("date")["y_total_7d"].transform("mean")
+    lo, hi = d["yd"].quantile([0.01, 0.99])
+    d["yw"] = d["yd"].clip(lo, hi)
+    pct = d.groupby("date")["pred"].rank(pct=True)
+    d["q"] = np.ceil(pct * 5).clip(1, 5).astype(int)
+    out = d.groupby("q").agg(mean_bp=("yd", "mean"), median_bp=("yd", "median"),
+                             winsor_mean_bp=("yw", "mean"), p99_bp=("yd", lambda x: x.quantile(0.99)),
+                             skew=("yd", "skew"), n=("yd", "size"))
+    for c in ("mean_bp", "median_bp", "winsor_mean_bp", "p99_bp"):
+        out[c] *= 1e4
+    spread = {}
+    for k, col in (("mean", "yd"), ("winsorized mean", "yw")):
+        s = d.groupby(["date", "q"])[col].mean().unstack()
+        spread[k] = triage.nw_stats((s[5] - s[1]).dropna(), 7)
+    med = d.groupby(["date", "q"])["yd"].median().unstack()
+    spread["median"] = triage.nw_stats((med[5] - med[1]).dropna(), 7)
+    out.attrs["spread"] = spread
+    return out

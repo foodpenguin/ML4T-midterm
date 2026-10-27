@@ -47,3 +47,49 @@ def test_config_round_trips_through_csv_strings():
     c = config_from_row(row)
     assert c == Config(width=64, learning_rate=0.0005, dropout=0.2, weight_decay=1e-3, batch_dates=16,
                        max_epochs=30, patience=5, xs_layers=3, use_sequence=False)
+
+
+def test_run_folds_trains_scales_and_validates_on_the_right_rows():
+    import pandas as pd
+    from crowding import deep
+    from crowding.config import DAY, setup
+    from crowding.splits import folds
+
+    dates = pd.date_range(setup()["evaluation"]["dev_start"], folds()[-1].val_end)
+    meta = pd.MultiIndex.from_product([dates, [f"S{i}" for i in range(3)]],
+                                      names=["date", "symbol"]).to_frame(index=False)
+    meta["target"] = 0.0
+    meta["label_end"] = meta["date"] + 7 * DAY
+    n = len(meta)
+    data = deep.DeepData(np.zeros((n, 168, 6), np.float32), np.ones((n, 168), np.uint8),
+                         np.zeros((n, 2), np.float32), meta)
+
+    class Recorder(deep.Trainer):
+        def __init__(self, d):
+            self.d, self.calls, self.scaled_on = d, [], None
+
+        def prepare(self, rows):
+            self.scaled_on = np.asarray(rows)
+
+        def fit(self, cfg, train_rows, seed, epochs=None, val_rows=None):
+            self.calls.append((np.asarray(train_rows), self.scaled_on, val_rows))
+            return object(), 3, 0.1
+
+        def predict(self, model, rows):
+            return np.zeros(len(rows))
+
+    tr = Recorder(data)
+    picked = {0, 15, 31}
+    deep.run_folds(tr, deep.Config(), seeds=2, only=picked, log=lambda *_: None)
+    by_fold = [f for f in folds() if f.fold in picked]
+    assert len(tr.calls) == 3 * len(by_fold)                 # inner + 2 seeds per fold
+    for i, f in enumerate(by_fold):
+        inner, *refits = tr.calls[3 * i: 3 * i + 3]
+        train, scaled, val = inner
+        assert np.array_equal(train, scaled), "inner scaling must use only the inner training rows"
+        assert meta["label_end"].iloc[train].max() <= meta["date"].iloc[val].min()
+        assert meta["label_end"].iloc[val].max() <= f.val_start
+        for train, scaled, val in refits:
+            assert val is None and np.array_equal(train, scaled)
+            assert meta["label_end"].iloc[train].max() <= f.val_start
+            assert meta["date"].iloc[train].max() < f.val_start
