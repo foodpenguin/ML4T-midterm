@@ -82,18 +82,28 @@ class TCN(nn.Module):
 
 
 class CrowdingNet(nn.Module):
-    def __init__(self, in_ch: int, n_static: int, width: int, dropout: float):
+    """``use_sequence=False`` is the registered ablation: no hourly branch, static inputs only."""
+
+    def __init__(self, in_ch: int, n_static: int, width: int, dropout: float,
+                 xs_layers: int = 2, use_sequence: bool = True):
         super().__init__()
-        self.enc = TCN(in_ch, width, dropout)
-        self.token = nn.Sequential(nn.Linear(width + n_static, width), nn.GELU(), nn.Dropout(dropout))
-        layer = nn.TransformerEncoderLayer(width, 4, 2 * width, dropout, batch_first=True)
-        self.xs = nn.TransformerEncoder(layer, 2, enable_nested_tensor=False)
+        self.use_sequence = use_sequence
+        self.enc = TCN(in_ch, width, dropout) if use_sequence else None
+        self.token = nn.Sequential(nn.Linear((width if use_sequence else 0) + n_static, width),
+                                   nn.GELU(), nn.Dropout(dropout))
+        heads = 4 if width % 4 == 0 else 1
+        layer = nn.TransformerEncoderLayer(width, heads, 2 * width, dropout, batch_first=True)
+        self.xs = nn.TransformerEncoder(layer, xs_layers, enable_nested_tensor=False)
         self.head = nn.Linear(width, 1)
 
     def forward(self, seq, static, pad):                   # seq: (b, k, 168, c); static: (b, k, s)
-        b, k = seq.shape[:2]
-        e = self.enc(seq.reshape(b * k, *seq.shape[2:])).reshape(b, k, -1)
-        z = self.xs(self.token(torch.cat([e, static], dim=2)), src_key_padding_mask=pad)
+        if self.use_sequence:
+            b, k = seq.shape[:2]
+            e = self.enc(seq.reshape(b * k, *seq.shape[2:])).reshape(b, k, -1)
+            x = torch.cat([e, static], dim=2)
+        else:
+            x = static
+        z = self.xs(self.token(x), src_key_padding_mask=pad)
         return self.head(z).squeeze(-1)
 
 
@@ -119,6 +129,22 @@ class Config:
     batch_dates: int = 8
     max_epochs: int = 30
     patience: int = 5
+    xs_layers: int = 2
+    use_sequence: bool = True
+
+
+def config_from_row(row) -> "Config":
+    """Rebuild a Config from a tuning.csv row (bools arrive as strings or numpy bools)."""
+    out = {}
+    for k, default in vars(Config()).items():
+        if k not in row or pd.isna(row[k]):
+            continue
+        v = row[k]
+        if isinstance(default, bool):
+            out[k] = str(v).strip().lower() in ("true", "1")
+        else:
+            out[k] = type(default)(v)
+    return Config(**out)
 
 
 class Trainer:
@@ -158,7 +184,8 @@ class Trainer:
         """Train; with ``val_rows`` early-stop on mean daily IC and return the best epoch count."""
         torch.manual_seed(seed)
         np.random.seed(seed)
-        model = CrowdingNet(self.X.shape[-1], self.S.shape[-1], cfg.width, cfg.dropout).to(self.device)
+        model = CrowdingNet(self.X.shape[-1], self.S.shape[-1], cfg.width, cfg.dropout,
+                            cfg.xs_layers, cfg.use_sequence).to(self.device)
         opt = torch.optim.AdamW(model.parameters(), lr=cfg.learning_rate, weight_decay=cfg.weight_decay)
         groups = date_groups(self.d.meta, train_rows)
         rng = np.random.default_rng(seed)
@@ -213,8 +240,36 @@ def tune(tr: Trainer, grid: list[Config], log=print) -> tuple[Config, pd.DataFra
         out.append({**vars(cfg), "best_epoch": ep, "inner_ic": ic, "seconds": time.time() - t0})
         log(f"tune {vars(cfg)} -> IC {ic:.4f} at epoch {ep} ({time.time() - t0:.0f}s)")
     t = pd.DataFrame(out)
-    best = t.loc[t["inner_ic"].idxmax()]
-    return Config(**{k: (type(getattr(Config, k))(best[k])) for k in vars(Config()).keys()}), t
+    return config_from_row(t.loc[t["inner_ic"].idxmax()]), t
+
+
+def tune_optuna(tr: "Trainer", n_trials: int, seed: int = 42, log=print,
+                max_epochs: int = 30) -> tuple[Config, pd.DataFrame]:
+    """Registered Optuna TPE search (config/deep_v2.yaml) on the pre-validation tuning window."""
+    import optuna
+    optuna.logging.set_verbosity(optuna.logging.WARNING)
+    rows_tr, rows_va = tuning_rows(tr.d)
+    tr.prepare(rows_tr)
+    records = []
+
+    def objective(trial):
+        cfg = Config(width=trial.suggest_categorical("width", [16, 32, 64, 96]),
+                     learning_rate=trial.suggest_float("learning_rate", 1e-4, 3e-3, log=True),
+                     dropout=trial.suggest_float("dropout", 0.0, 0.5),
+                     weight_decay=trial.suggest_float("weight_decay", 1e-5, 1e-1, log=True),
+                     xs_layers=trial.suggest_int("xs_layers", 1, 3),
+                     batch_dates=trial.suggest_categorical("batch_dates", [4, 8, 16]),
+                     max_epochs=max_epochs, patience=min(5, max_epochs))
+        t0 = time.time()
+        _, ep, ic = tr.fit(cfg, rows_tr, seed=0, val_rows=rows_va)
+        records.append({**vars(cfg), "best_epoch": ep, "inner_ic": ic, "seconds": time.time() - t0})
+        log(f"optuna trial {trial.number}: {vars(cfg)} -> IC {ic:.4f} at epoch {ep}")
+        return ic if np.isfinite(ic) else -1.0
+
+    study = optuna.create_study(direction="maximize", sampler=optuna.samplers.TPESampler(seed=seed))
+    study.optimize(objective, n_trials=n_trials)
+    t = pd.DataFrame(records)
+    return config_from_row(t.loc[t["inner_ic"].idxmax()]), t
 
 
 def run_folds(tr: Trainer, cfg: Config, seeds: int = 5, only=None, log=print) -> tuple[pd.DataFrame, pd.DataFrame]:

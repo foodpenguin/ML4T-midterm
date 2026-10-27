@@ -51,7 +51,7 @@ def prepare() -> None:
     print("wrote", sorted(p.name for p in DEEP.iterdir()))
 
 
-def train(data: Path, out: Path, smoke: bool) -> None:
+def train(data: Path, out: Path, smoke: bool, variant: str = "grid", tuned_from: Path | None = None) -> None:
     import torch
     import yaml
     from crowding import deep
@@ -66,7 +66,7 @@ def train(data: Path, out: Path, smoke: bool) -> None:
 
     cfg = yaml.safe_load(open(ROOT / "config" / "deep.yaml", encoding="utf-8"))
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    log(f"device {device} {torch.cuda.get_device_name(0) if device.type == 'cuda' else ''}")
+    log(f"variant {variant}; device {device} {torch.cuda.get_device_name(0) if device.type == 'cuda' else ''}")
     d = deep.DeepData(np.load(data / "X.npy").astype(np.float32), np.load(data / "mask.npy"),
                       np.load(data / "static.npy"), pd.read_parquet(data / "meta.parquet"))
     tr = deep.Trainer(d, device)
@@ -79,11 +79,27 @@ def train(data: Path, out: Path, smoke: bool) -> None:
         grid = [deep.Config(width=16, learning_rate=1e-3, dropout=0.1, max_epochs=2, patience=1)]
         seeds, only = 2, {0, 31}
 
-    if (out / "tuning.csv").exists() and not smoke:
+    v2 = yaml.safe_load(open(ROOT / "config" / "deep_v2.yaml", encoding="utf-8"))
+    if variant == "ablation":
+        # deep_v2's tuned config with the hourly branch removed (config/deep_v2.yaml -> ablation)
+        src = pd.read_csv((tuned_from or out.parent / "out_v2") / "tuning.csv")
+        best = deep.config_from_row(src.loc[src["inner_ic"].idxmax()])
+        best.use_sequence = False
+        if smoke:
+            best.max_epochs, best.patience = 2, 1
+        pd.DataFrame([{**vars(best), "source": "out_v2 best, use_sequence=False"}]).to_csv(out / "tuning.csv", index=False)
+        log(f"ablation config {vars(best)}")
+    elif (out / "tuning.csv").exists() and not smoke:
         tuning = pd.read_csv(out / "tuning.csv")
-        best_row = tuning.loc[tuning["inner_ic"].idxmax()]
-        best = deep.Config(**{k: type(getattr(deep.Config, k))(best_row[k]) for k in vars(deep.Config())})
+        best = deep.config_from_row(tuning.loc[tuning["inner_ic"].idxmax()])
         log(f"resume: tuned config {vars(best)}")
+    elif variant == "optuna":
+        n = 2 if smoke else v2["optuna_variant"]["trials"]
+        best, tuning = deep.tune_optuna(tr, n, log=log, max_epochs=2 if smoke else 30)
+        if smoke:
+            best.max_epochs, best.patience = 2, 1
+        tuning.to_csv(out / "tuning.csv", index=False)
+        log(f"best config {vars(best)}")
     else:
         best, tuning = deep.tune(tr, grid, log=log)
         tuning.to_csv(out / "tuning.csv", index=False)
@@ -101,7 +117,7 @@ def train(data: Path, out: Path, smoke: bool) -> None:
         info = i if info is None else pd.concat([info, i], ignore_index=True)
         done.to_parquet(out / "predictions.parquet", index=False)        # checkpoint after every fold
         info.to_csv(out / "folds.csv", index=False)
-    (out / "DONE").write_text(json.dumps({"config": vars(best), "seeds": seeds, "smoke": smoke}))
+    (out / "DONE").write_text(json.dumps({"variant": variant, "config": vars(best), "seeds": seeds, "smoke": smoke}))
     log("done")
 
 
@@ -120,5 +136,7 @@ if __name__ == "__main__":
     ap.add_argument("--data", type=Path, default=DEEP)
     ap.add_argument("--out", type=Path, default=DEEP / "out")
     ap.add_argument("--smoke", action="store_true")
+    ap.add_argument("--variant", choices=["grid", "optuna", "ablation"], default="grid")
+    ap.add_argument("--tuned-from", type=Path, default=None)
     a = ap.parse_args()
-    {"prepare": prepare, "train": lambda: train(a.data, a.out, a.smoke), "evaluate": evaluate}[a.stage]()
+    {"prepare": prepare, "train": lambda: train(a.data, a.out, a.smoke, a.variant, a.tuned_from), "evaluate": evaluate}[a.stage]()
