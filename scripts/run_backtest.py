@@ -22,7 +22,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from crowding import backtest as bt  # noqa: E402
-from crowding import runlog, triage  # noqa: E402
+from crowding import runlog  # noqa: E402
+from crowding.regimes import btc_state  # noqa: E402
 from crowding.config import ARTIFACTS, PROCESSED  # noqa: E402
 from crowding.io import load_daily_bars  # noqa: E402
 from crowding.ledger import trials_run  # noqa: E402
@@ -51,17 +52,6 @@ def md(df: pd.DataFrame, nd: int = 3) -> str:
             "" if v is None or (isinstance(v, float) and np.isnan(v)) else
             (f"{v:.{nd}f}" if isinstance(v, (float, np.floating)) else str(v)) for v in r.values) + " |")
     return "\n".join(lines)
-
-
-def btc_state(bars: pd.DataFrame, dates: pd.DatetimeIndex) -> pd.DataFrame:
-    """BTC 20-day vol tercile (point-in-time) and 21-day trend sign, from bars up to d-1."""
-    b = bars[(bars["symbol"] == "BTCUSDT") & bars["valid"]].set_index("date")["close"]
-    b = b.reindex(pd.date_range(b.index.min(), b.index.max() + pd.Timedelta(days=1)))
-    lr = np.log(b).diff()
-    vol = lr.rolling(20, min_periods=15).std().shift(1)
-    trend = (b / b.shift(21) - 1).shift(1)
-    terc = triage.pit_terciles(vol)
-    return pd.DataFrame({"vol_tercile": terc, "trend_up": trend > 0}).reindex(dates)
 
 
 def main() -> None:

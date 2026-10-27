@@ -91,13 +91,17 @@ def _record_touch(period: str, reason: str) -> None:
         w.writerow([datetime.now(timezone.utc).isoformat(timespec="seconds"), period, commit, reason])
 
 
-def load_sample(period: str = "dev", horizon: int | None = None, reason: str = "") -> pd.DataFrame:
+def load_sample(period: str = "dev", horizon: int | None = None, reason: str = "",
+                require_label: bool = True) -> pd.DataFrame:
     """Rows of one period with ranked features, flags, and labels.
 
     Features are ranked over every in-universe row with ``fund_7d`` on that date, which is
     knowable at decision time; rows whose label is missing are dropped only afterwards, so
     a name's rank never depends on whether another name's future label exists. Every model
     and the rule baseline are scored on the same (date, symbol) set.
+
+    ``require_label=False`` keeps rows whose label is not (yet) realized, with a NaN target:
+    needed to predict every decision date of the holdout and the forward shadow period.
     """
     lo, hi, label_deadline = period_bounds()[period]
     if period == "dev":
@@ -118,7 +122,8 @@ def load_sample(period: str = "dev", horizon: int | None = None, reason: str = "
     for c in cols:
         df[f"{c}_isna"] = df[c].isna().astype(np.int8)
         df[f"r_{c}"] = ranked[c].fillna(0.0)
-    df = df[df[f"y_total_{H}d"].notna()].reset_index(drop=True)
+    if require_label:
+        df = df[df[f"y_total_{H}d"].notna()].reset_index(drop=True)
     df["target"] = xs_rank(df, [f"y_total_{H}d"])[f"y_total_{H}d"]
     df["label_end"] = df[f"label_end_{H}d"]
     return df

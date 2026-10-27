@@ -115,12 +115,19 @@ class Result:
 def run(m: Market, scores: pd.DataFrame, start: str, end_exclusive: str, *,
         allocator: str = "equal_weight", long_only: bool = False, cost_mult: float = 1.0,
         spread_mult: float = 1.0, vol_target: float | None = None,
-        kill_switch: list | None = None, capital: float | None = None) -> Result:
-    """Simulate the 7-tranche book from ``start`` to ``end_exclusive`` (PnL days)."""
+        kill_switch: list | None = None, capital: float | None = None,
+        pnl_limit: str | None = None) -> Result:
+    """Simulate the 7-tranche book from ``start`` to ``end_exclusive`` (PnL days).
+
+    ``pnl_limit`` is the latest instant whose prices may enter PnL: the holdout start by
+    default (dev work); the holdout run passes the forward-shadow start explicitly.
+    """
     capital = capital or setup()["costs"]["capital_usd"]
     t0, t1 = m.row(pd.Timestamp(start)), m.row(pd.Timestamp(end_exclusive))
-    holdout = pd.Timestamp(setup()["evaluation"]["holdout"]["start"])
-    assert m.dates[t1] <= holdout, "backtest would earn PnL from holdout prices"
+    ev = setup()["evaluation"]
+    limit = pd.Timestamp(pnl_limit or ev["holdout"]["start"])
+    assert limit <= pd.Timestamp(ev["forward_shadow"]["start"]), "PnL may never use shadow-period prices"
+    assert m.dates[t1] <= limit, "backtest would earn PnL from prices beyond its allowed period"
     sc = scores.pivot(index="date", columns="symbol", values="score")
     vol_df = pd.DataFrame(m.vol, index=m.dates, columns=m.symbols)
     N = len(m.symbols)

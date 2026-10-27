@@ -315,3 +315,25 @@ def run_folds(tr: Trainer, cfg: Config, seeds: int = 5, only=None, log=print) ->
                      "seed_pred_corr": float(np.corrcoef(preds)[np.triu_indices(seeds, 1)].mean()) if seeds > 1 else np.nan})
         log(f"fold {f.fold}: epochs {n_ep}, inner IC {inner_ic:.4f}, {time.time() - t0:.0f}s")
     return pd.concat(outs, ignore_index=True), pd.DataFrame(info)
+
+
+def final_fit(tr: Trainer, cfg: Config, r_train, r_itr, r_iva, r_pred, seeds: int = 5,
+              log=print) -> pd.DataFrame:
+    """Holdout final fit (config/holdout.yaml -> final_models.deep_v2), same steps as one fold:
+    inner model on r_itr early-stopped on r_iva (scaling fitted on r_itr), conformal from its
+    residuals, then ``seeds`` refits on r_train for that epoch count (scaling refitted on
+    r_train). ``r_pred`` rows need no labels."""
+    m = tr.d.meta
+    t0 = time.time()
+    tr.prepare(r_itr)
+    inner, n_ep, inner_ic = tr.fit(cfg, r_itr, seed=0, val_rows=r_iva)
+    n_ep = max(n_ep, 1)
+    res = m["target"].to_numpy()[r_iva] - tr.predict(inner, r_iva)
+    q80, q90 = conformal_q(res, 0.8), conformal_q(res, 0.9)
+    pred_inner = tr.predict(inner, r_pred)
+    tr.prepare(r_train)
+    preds = [tr.predict(tr.fit(cfg, r_train, seed=s, epochs=n_ep)[0], r_pred) for s in range(seeds)]
+    o = m.iloc[r_pred][["date", "symbol"]].copy().reset_index(drop=True)
+    o["fold"], o["pred"], o["pred_inner"], o["q80"], o["q90"] = 0, np.mean(preds, axis=0), pred_inner, q80, q90
+    log(f"final fit: epochs {n_ep}, inner IC {inner_ic:.4f}, {time.time() - t0:.0f}s")
+    return o

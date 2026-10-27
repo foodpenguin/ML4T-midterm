@@ -122,6 +122,29 @@ def train(data: Path, out: Path, smoke: bool, variant: str = "grid", tuned_from:
     log("done")
 
 
+def holdout_train(data: Path, out: Path, smoke: bool) -> None:
+    """Colab stage of the holdout run: final deep_v2 fit on dev rows, predictions for the
+    holdout rows. ``data`` holds X/mask/static/meta (holdout rows have no target), rows.npz with
+    the registered row sets, and config.json with the frozen deep_v2 config."""
+    import torch
+    from crowding import deep
+    out.mkdir(parents=True, exist_ok=True)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    d = deep.DeepData(np.load(data / "X.npy").astype(np.float32), np.load(data / "mask.npy"),
+                      np.load(data / "static.npy"), pd.read_parquet(data / "meta.parquet"))
+    rows = np.load(data / "rows.npz")
+    cfg = deep.config_from_row(pd.Series(json.loads((data / "config.json").read_text())))
+    seeds = 5
+    if smoke:
+        cfg.max_epochs, cfg.patience, seeds = 2, 1, 2
+    print(f"device {device}; config {vars(cfg)}", flush=True)
+    p = deep.final_fit(deep.Trainer(d, device), cfg, rows["train"], rows["inner_train"],
+                       rows["inner_val"], rows["pred"], seeds=seeds)
+    p.to_parquet(out / "predictions.parquet", index=False)
+    (out / "DONE").write_text(json.dumps({"config": vars(cfg), "seeds": seeds, "smoke": smoke}))
+    print("done", flush=True)
+
+
 def evaluate() -> None:
     sys.path.insert(0, str(ROOT / "scripts"))
     import deep_evaluate
@@ -131,11 +154,12 @@ def evaluate() -> None:
 if __name__ == "__main__":
     sys.stdout.reconfigure(encoding="utf-8")
     ap = argparse.ArgumentParser()
-    ap.add_argument("stage", choices=["prepare", "train", "evaluate"])
+    ap.add_argument("stage", choices=["prepare", "train", "evaluate", "holdout-train"])
     ap.add_argument("--data", type=Path, default=DEEP)
     ap.add_argument("--out", type=Path, default=DEEP / "out")
     ap.add_argument("--smoke", action="store_true")
     ap.add_argument("--variant", choices=["grid", "optuna", "ablation"], default="grid")
     ap.add_argument("--tuned-from", type=Path, default=None)
     a = ap.parse_args()
-    {"prepare": prepare, "train": lambda: train(a.data, a.out, a.smoke, a.variant, a.tuned_from), "evaluate": evaluate}[a.stage]()
+    {"prepare": prepare, "train": lambda: train(a.data, a.out, a.smoke, a.variant, a.tuned_from), "evaluate": evaluate,
+     "holdout-train": lambda: holdout_train(a.data, a.out, a.smoke)}[a.stage]()
