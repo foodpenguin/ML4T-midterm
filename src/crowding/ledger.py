@@ -8,7 +8,10 @@ from .config import ROOT
 LEDGER = ROOT / "ledger" / "research_ledger.csv"
 
 
+NOT_RUN = ("planned_optional", "dropped")
+
+
 def trials_run(path=LEDGER) -> int:
-    """Trials counted for deflation: every family except those still only planned."""
+    """Trials counted for deflation: every family that was run (not planned-only or dropped)."""
     led = pd.read_csv(path)
-    return int(led.loc[led["status"] != "planned_optional", "n_trials"].sum())
+    return int(led.loc[~led["status"].isin(NOT_RUN), "n_trials"].sum())
