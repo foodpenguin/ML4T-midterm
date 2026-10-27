@@ -1,0 +1,2 @@
+width,learning_rate,dropout,weight_decay,batch_dates,max_epochs,patience,xs_layers,use_sequence,source
+64,0.0007115014621361,0.4434020525129514,0.000106841825341,4,30,5,2,False,"out_v2 best, use_sequence=False"
