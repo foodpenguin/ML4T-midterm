@@ -116,6 +116,19 @@ def main() -> None:
             sweep.append({"strategy": name, "cost_multiple": mult, "net_sharpe": mt["sharpe"], "net_cagr": mt["cagr"]})
     sweep = pd.DataFrame(sweep)
 
+    # Path sensitivity of the kill-switch overlay: the registered ladder, with costs perturbed
+    # by a few percent. A diagnostic of the registered overlay, not a search over overlays.
+    ks_sens = []
+    for cm in (0.95, 0.98, 1.0, 1.02, 1.05):
+        d = bt.run(m, ridge, start, end, vol_target=vt, kill_switch=ladder, cost_mult=cm).daily
+        flat = d["scale"].eq(0)
+        unwinds = d.index[flat & ~flat.shift(1, fill_value=False)]
+        ks_sens.append({"cost_multiple": cm, "net_sharpe": bt.metrics(d)["sharpe"],
+                        "max_drawdown": bt.metrics(d)["max_drawdown"],
+                        "unwind_dates": ", ".join(str(x.date()) for x in unwinds) or "none"})
+    ks_sens = pd.DataFrame(ks_sens)
+    ks_sens.to_csv(REPORT / "backtest_killswitch_sensitivity.csv", index=False)
+
     # --- metrics table ---------------------------------------------------------------------
     table = []
     for name, r in runs.items():
@@ -295,7 +308,7 @@ def main() -> None:
                           "funding": row["funding"], "btc_return": float(btc["ret"].get(date, np.nan)),
                           "largest_loss_name": row["worst_name"], "its_pnl": row["worst_name_pnl"]})
     worst = pd.DataFrame(worst)
-    write_report(cfg, table, sweep, inf, risk, regime, stress, figs, avg_cost_bp, beta_btc, beta_ew, worst)
+    write_report(cfg, table, sweep, inf, risk, regime, stress, figs, avg_cost_bp, beta_btc, beta_ew, worst, ks_sens)
 
     for k in ("rule EW", "ridge EW", "ridge EW + vol target"):
         mt = {c: (float(v) if isinstance(v, (int, float, np.floating)) else v) for c, v in table.loc[k].items()}
@@ -304,7 +317,7 @@ def main() -> None:
     print(md(table[["sharpe", "gross_sharpe", "cagr", "max_drawdown", "turnover_annual", "breakeven_bp_per_leg"]]))
 
 
-def write_report(cfg, table, sweep, inf, risk, regime, stress, figs, avg_cost_bp, beta_btc, beta_ew, worst) -> None:
+def write_report(cfg, table, sweep, inf, risk, regime, stress, figs, avg_cost_bp, beta_btc, beta_ew, worst, ks_sens) -> None:
     cols = ["sharpe", "gross_sharpe", "cagr", "vol", "max_drawdown", "longest_underwater_days", "recovery_days",
             "price_annual", "funding_annual", "cost_annual", "turnover_annual", "holding_days",
             "breakeven_bp_per_leg", "effective_bets"]
@@ -323,7 +336,7 @@ def write_report(cfg, table, sweep, inf, risk, regime, stress, figs, avg_cost_bp
         f"- **Rule baseline (rule EW)**: net Sharpe {T.loc['rule EW', 'sharpe']:+.2f} [{inf.loc['rule EW', 'ci_low']:+.2f}, {inf.loc['rule EW', 'ci_high']:+.2f}]; gross {T.loc['rule EW', 'gross_sharpe']:+.2f}; break-even {T.loc['rule EW', 'breakeven_bp_per_leg']:.0f} bp per leg vs about {avg_cost_bp['rule EW']:.0f} bp assumed ({regimes['rule EW']}).",
         f"- **Benchmarks**: EW universe (long-only) net Sharpe {T.loc['EW universe (long-only)', 'sharpe']:+.2f}; BTC hold {T.loc['BTC hold', 'sharpe']:+.2f}.",
         f"- **Inverse-vol allocator**: lifts both signals (ridge {T.loc['ridge inverse-vol', 'sharpe']:+.2f}, rule {T.loc['rule inverse-vol', 'sharpe']:+.2f}). It is a second-order effect and was reported, not selected; the headline stays equal weight as registered.",
-        f"- **Overlay**: {'the vol target plus the kill-switch ladder turns the deployed model from negative to positive (' + format(T.loc['ridge EW + vol target + kill switch', 'sharpe'], '+.2f') + '). Overlays refine, never redeem: this is drawdown control on a book with no demonstrated edge, not evidence of one' if flipped else 'the overlays change the deployed model only at the margin'}.",
+        f"- **Overlay**: {'the vol target plus the kill-switch ladder turns the deployed model from negative to positive (' + format(T.loc['ridge EW + vol target + kill switch', 'sharpe'], '+.2f') + '). Overlays refine, never redeem: this is drawdown control on a book with no demonstrated edge, not evidence of one' if flipped else 'the vol target and the kill-switch ladder do not make the deployed model positive (' + format(T.loc['ridge EW + vol target + kill switch', 'sharpe'], '+.2f') + ')'}. With costs perturbed by ±5%, the ladder's net Sharpe spans {ks_sens['net_sharpe'].min():+.2f} to {ks_sens['net_sharpe'].max():+.2f}: whether the 20% unwind fires is path luck.",
         f"- **Deflated Sharpe** with {N_TRIALS} trials: ridge {inf.loc['ridge EW', 'dsr']:.3f}, rule {inf.loc['rule EW', 'dsr']:.3f}. Neither survives the search.",
     ])
     text = f"""# Backtest, costs, portfolio and risk (W5)
@@ -429,6 +442,14 @@ Point-in-time BTC volatility terciles × BTC 21-day trend. This single definitio
 Vol target {0.20:.0%} annualized, using t−1 information. Kill-switch ladder from the registered term sheet.
 
 {md(overlay)}
+
+**Kill-switch path sensitivity.** The registered ladder is re-run with all costs scaled by ±2–5%:
+
+{md(ks_sens)}
+
+Net Sharpe ranges from {ks_sens['net_sharpe'].min():+.2f} to {ks_sens['net_sharpe'].max():+.2f}. Whether the 20% unwind fires, and when, depends on
+drawdowns a fraction of a percent from the threshold. The ladder's effect on this book is
+therefore path luck, not a property of the strategy.
 
 ![drawdown](figures/{figs['drawdown']})
 
