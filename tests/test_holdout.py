@@ -51,3 +51,29 @@ def test_backtest_never_uses_shadow_prices():
     m = bt.Market(pd.date_range("2026-10-01", periods=40), pd.Index(["A"]), *[np.ones((40, 1))] * 5)
     with pytest.raises(AssertionError):
         bt.run(m, pd.DataFrame(columns=["date", "symbol", "score"]), "2026-10-20", "2026-10-27", pnl_limit=later)
+
+
+def _meta():
+    dates = pd.date_range("2024-01-01", "2025-12-31")
+    m = pd.DataFrame({"date": dates, "target": np.linspace(-0.5, 0.5, len(dates)),
+                      "label_end": dates + 7 * DAY})
+    fit = (m["date"] < pd.Timestamp("2025-04-25")).to_numpy()
+    return m, fit
+
+
+def test_deep_row_sets_never_train_on_prediction_rows():
+    m, fit = _meta()
+    pred = np.nonzero(~fit)[0]
+    rs = ho.deep_row_sets(m, fit, pred, pd.Timestamp("2025-04-25"))
+    assert not set(rs["pred"]) & set(rs["train"])
+    assert m["label_end"].iloc[rs["train"]].max() <= pd.Timestamp("2025-04-25")
+    assert m["label_end"].iloc[rs["inner_train"]].max() <= m["date"].iloc[rs["inner_val"]].min()
+    with pytest.raises(ValueError):
+        ho.deep_row_sets(m, np.ones(len(m), bool), pred, pd.Timestamp("2026-01-01"))
+
+
+def test_evaluation_targets_are_stripped():
+    m, fit = _meta()
+    out = ho.strip_eval_targets(m, fit)
+    assert out.loc[~fit, "target"].isna().all()
+    assert out.loc[fit, "target"].equals(m.loc[fit, "target"])

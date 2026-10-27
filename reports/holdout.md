@@ -19,7 +19,7 @@ The result was written to `reports/holdout_confirmatory.json` at 2026-10-27T04:5
 | Risk overlay | net Sharpe; max DD with vol target 20% | -0.18; 34% | -0.69; 36% | — |
 | Inference | Deflated Sharpe (trials = 454); min track record (yrs) | 0.000; ∞ | 0.000; ∞ | — |
 
-**Outcome (Chapter 20 patterns, registered rules)**: the signal **strengthens**; the net PnL is **never resolved**.
+**Outcome (Chapter 20 patterns, registered rules)**: the signal **strengthens**; the net PnL is **never resolved**. The validation and holdout IC intervals overlap ([+0.102, +0.160] vs [+0.107, +0.173]), so the difference between them is within sampling error: read the IC as having held, not as a measured improvement.
 
 ## All models on the holdout (only ridge is confirmatory)
 
@@ -67,15 +67,19 @@ The result was written to `reports/holdout_confirmatory.json` at 2026-10-27T04:5
 | 2 | up | 58 | 0.448 | 0.154 |
 | 3 | down | 21 | -5.202 | 0.149 |
 
-**Feature drift (PSI, dev vs holdout; watch 0.10–0.25, retrain > 0.25)**
+**Feature drift, top-5 SHAP features**
 
-| feature | mean |SHAP| | PSI | status |
-|---|---|---|---|
-| log_age | 0.010 | 0.394 | retrain |
-| rvol_20d | 0.010 | 0.176 | watch |
-| oi_to_adv | 0.006 | 0.749 | retrain |
-| ret_7d | 0.003 | 0.025 | stable |
-| fund_7d | 0.003 | 0.290 | retrain |
+- **PSI raw level** compares each feature's raw values between dev and holdout (watch 0.10–0.25, retrain > 0.25).
+- **What the model actually reads**: within-date ranks, which are uniform by construction. A raw-level shift, such as `log_age` rising as every contract ages, therefore does not move the model's inputs.
+- **The model-relevant check** is whether the feature's relation to the label held: the IC in dev vs the holdout, in the **relation** column.
+
+| feature | mean |SHAP| | PSI raw level | IC dev | IC holdout | level status | relation |
+|---|---|---|---|---|---|---|
+| log_age | 0.010 | 0.394 | 0.104 | 0.115 | retrain | held |
+| rvol_20d | 0.010 | 0.176 | -0.110 | -0.134 | watch | held |
+| oi_to_adv | 0.006 | 0.749 | 0.087 | 0.102 | retrain | held |
+| ret_7d | 0.003 | 0.025 | -0.028 | 0.004 | stable | sign flipped |
+| fund_7d | 0.003 | 0.290 | -0.035 | -0.030 | retrain | held |
 
 **Worst holdout days (ridge EW)**
 
@@ -100,6 +104,7 @@ The result was written to `reports/holdout_confirmatory.json` at 2026-10-27T04:5
 ## Forward shadow period
 
 - **Frozen predictions**: 100 ridge predictions for the decision date(s) 2026-10-25, written to `reports/shadow_predictions.csv`.
-- **Commitment**: SHA-256 `89b52ae10a65333ce31fb2adc41fd7a195720ffd75a743dfbca45eba5b781203`, committed with this report.
+- **Commitment**: SHA-256 `c1e993f572ef961bea33b5a203f27777642830867e9eadd892517089a90675eb`, committed with this report.
 - **Realized labels so far**: 0. The snapshot ends 2026-10-24 and a 7-day label needs data through d + 7.
+- **Inputs were incomplete on that date**: `oi_chg_1d`, `oi_chg_7d`, `oi_to_adv`, `lsr_div`, `lsr_div_chg_7d`, `glsr_z_30d`, `tplsr_z_30d`, `taker_24h`, `taker_7d` were mostly missing and entered as the neutral rank. The shadow test therefore checks a degraded-input version of the frozen model.
 - **Later evaluation**: extending the snapshot (`tools/daily_update.py`, then `scripts/build_dataset.py` with a later `snapshot_end_exclusive`) and scoring these exact predictions tests a forecast made before its outcome.

@@ -5,6 +5,35 @@
     "2026-10-25"
   ],
   "n_rows": 100,
-  "sha256": "89b52ae10a65333ce31fb2adc41fd7a195720ffd75a743dfbca45eba5b781203",
-  "labels_realized": 0
+  "sha256": "c1e993f572ef961bea33b5a203f27777642830867e9eadd892517089a90675eb",
+  "labels_realized": 0,
+  "sha256_original_crlf": "89b52ae10a65333ce31fb2adc41fd7a195720ffd75a743dfbca45eba5b781203",
+  "hash_note": "sha256 is over the canonical LF bytes now committed (the file is stored verbatim, see .gitattributes). The original run hashed the same rows written with Windows CRLF line endings (sha256_original_crlf); the values are identical, only line endings differ.",
+  "feature_coverage": {
+    "fund_1d": 1.0,
+    "fund_7d": 1.0,
+    "fund_30d": 1.0,
+    "fund_z_90d": 1.0,
+    "fund_chg_7d": 1.0,
+    "oi_chg_1d": 0.0,
+    "oi_chg_7d": 0.0,
+    "oi_to_adv": 0.0,
+    "lsr_div": 0.0,
+    "lsr_div_chg_7d": 0.0,
+    "glsr_z_30d": 0.0,
+    "tplsr_z_30d": 0.0,
+    "taker_24h": 0.0,
+    "taker_7d": 0.0,
+    "rvol_20d": 1.0,
+    "ret_7d": 1.0,
+    "ret_21d": 1.0,
+    "volmom_21d": 1.0,
+    "log_adv_30d": 1.0,
+    "log_age": 1.0,
+    "mkt_fund_7d": 1.0,
+    "xs_fund_disp": 1.0,
+    "btc_ret_7d": 1.0,
+    "btc_rvol_20d": 1.0
+  },
+  "coverage_note": "share of shadow rows with each raw feature observed; missing values entered the frozen ridge as the neutral rank 0. Positioning features are missing because the metrics archive ends at 2026-10-24 23:00, before the 00:00 decision."
 }

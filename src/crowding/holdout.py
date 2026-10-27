@@ -70,13 +70,10 @@ def final_ridge(sp: FinalSplit, rows: pd.DataFrame) -> tuple[pd.DataFrame, dict]
 
 
 def frozen_lgbm_params() -> dict:
-    """Best W4 Optuna trial (reports/models_optuna_trials.csv), as registered."""
-    t = pd.read_csv(ROOT / "reports" / "models_optuna_trials.csv")
-    best = t.loc[t["value"].idxmax()]
-    p = {c.removeprefix("params_"): best[c] for c in t.columns if c.startswith("params_")}
-    for k in ("num_leaves", "max_depth", "min_data_in_leaf"):
-        p[k] = int(p[k])
-    return {k: (float(v) if not isinstance(v, int) else v) for k, v in p.items()}
+    """LightGBM parameters frozen after W4 (config/frozen_lgbm_params.json), not re-read from a
+    report that a W4 rerun would overwrite."""
+    import json
+    return json.loads((ROOT / "config" / "frozen_lgbm_params.json").read_text())["params"]
 
 
 def final_lgbm(sp: FinalSplit, rows: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
@@ -89,6 +86,28 @@ def final_lgbm(sp: FinalSplit, rows: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
     final = fit_lgbm(params, sp.train, None, n_rounds=n)
     return (_out(rows, final.predict(rows[X]), inner.predict(rows[X], num_iteration=n), q),
             {"n_rounds": n, "params": frozen_lgbm_params()})
+
+
+def deep_row_sets(meta: pd.DataFrame, fit_mask: np.ndarray, pred_rows: np.ndarray,
+                  boundary: pd.Timestamp) -> dict[str, np.ndarray]:
+    """Row indices for the deep final fit: training rows are fit rows whose label ended by the
+    boundary; the inner window is the last 3 months before it; prediction rows never train."""
+    e = meta["label_end"].where(fit_mask)
+    inner_start = boundary - pd.DateOffset(months=3)
+    out = {"train": np.nonzero((e <= boundary).to_numpy())[0],
+           "inner_train": np.nonzero((e <= inner_start).to_numpy())[0],
+           "inner_val": np.nonzero(((meta["date"] >= inner_start) & (e <= boundary)).to_numpy())[0],
+           "pred": np.asarray(pred_rows)}
+    if set(out["pred"]) & (set(out["train"]) | set(out["inner_val"])):
+        raise ValueError("prediction rows overlap training or calibration rows")
+    return out
+
+
+def strip_eval_targets(meta: pd.DataFrame, fit_mask: np.ndarray) -> pd.DataFrame:
+    """Copy of meta with every non-fit (evaluation) row's target removed before it leaves the machine."""
+    out = meta.copy()
+    out.loc[~np.asarray(fit_mask), "target"] = np.nan
+    return out
 
 
 # --- registered classification rules (config/holdout.yaml -> pattern_rules) ----------------

@@ -80,8 +80,9 @@ def git_commit() -> str:
 def predict(rehearsal: bool) -> None:
     P = paths(rehearsal)
     base = P["base"]
-    if not rehearsal and (base / "eval_sample.parquet").exists():
-        raise SystemExit("artifacts/holdout already holds a holdout run; the holdout is touched once")
+    conf_path = base / "confirmatory.json" if rehearsal else P["report"] / "holdout_confirmatory.json"
+    if not rehearsal and conf_path.exists():
+        raise SystemExit("the confirmatory result already exists; the holdout is touched once")
     if rehearsal and base.exists():
         shutil.rmtree(base)
     base.mkdir(parents=True, exist_ok=True)
@@ -90,23 +91,27 @@ def predict(rehearsal: bool) -> None:
     if rehearsal:
         rows = dev[(dev["date"] >= P["boundary"]) & (dev["date"] <= P["end"])].reset_index(drop=True)
         dev_fit = dev[dev["date"] < P["boundary"]]
+    elif (base / "eval_sample.parquet").exists():
+        # A previous run touched the holdout and saved it, then stopped before the confirmatory
+        # result: resume from that copy instead of touching the sealed files again.
+        rows = pd.read_parquet(base / "eval_sample.parquet")
+        dev_fit = dev
+        print("resuming from the saved holdout copy (no new touch)", flush=True)
     else:
         reason = f"W6 single holdout run, config/holdout.yaml frozen at {git_commit()}"
         rows = load_sample("holdout", horizon=7, reason=reason, require_label=False)
+        rows.to_parquet(base / "eval_sample.parquet", index=False)   # saved at once: a crash can resume
         dev_fit = dev
+    if rehearsal:
+        rows.to_parquet(base / "eval_sample.parquet", index=False)
     sp = ho.final_split(dev_fit, P["boundary"])
     print(f"final fit rows {len(sp.train):,} (inner {len(sp.inner_train):,} / {len(sp.inner_val):,}); "
           f"evaluation rows {len(rows):,}, labeled {int(rows['y_total_7d'].notna().sum()):,}", flush=True)
 
-    preds = {"rule_carry": ho.final_rule(rows)}
+    preds = {}
     preds["ridge"], ridge_info = ho.final_ridge(sp, rows)
-    preds["lightgbm"], lgbm_info = ho.final_lgbm(sp, rows)
-    rows.to_parquet(base / "eval_sample.parquet", index=False)
-    for k, v in preds.items():
-        v.to_parquet(base / f"preds_{k}.parquet", index=False)
-    ridge_info["shap"].to_parquet(base / "ridge_shap.parquet", index=False)
 
-    # Confirmatory test, written before anything else is computed.
+    # Confirmatory test, computed right after the deployed model's fit and before anything else.
     labeled = rows[rows["y_total_7d"].notna()]
     ic = triage.xs_ic(preds["ridge"].merge(labeled[["date", "symbol", "y_total_7d"]], on=["date", "symbol"]),
                       "pred", "y_total_7d")
@@ -116,9 +121,14 @@ def predict(rehearsal: bool) -> None:
             "window": [str(P["boundary"].date()), str(P["end"].date())], "n_days": st["n"],
             "ic_mean": st["mean"], "ci_low": st["ci_low"], "ci_high": st["ci_high"], "nw_t": st["t"],
             "pass": bool(st["ci_low"] > 0), "rule": "NW 95% CI lower bound > 0 (config/holdout.yaml)"}
-    target = base / "confirmatory.json" if rehearsal else P["report"] / "holdout_confirmatory.json"
-    target.write_text(json.dumps(conf, indent=2))
+    conf_path.write_text(json.dumps(conf, indent=2))
     print("CONFIRMATORY:", json.dumps(conf), flush=True)
+
+    preds["rule_carry"] = ho.final_rule(rows)
+    preds["lightgbm"], lgbm_info = ho.final_lgbm(sp, rows)
+    for k, v in preds.items():
+        v.to_parquet(base / f"preds_{k}.parquet", index=False)
+    ridge_info["shap"].to_parquet(base / "ridge_shap.parquet", index=False)
     (base / "final_models.json").write_text(json.dumps(
         {"ridge": {k: v for k, v in ridge_info.items() if k != "shap"}, "lightgbm": lgbm_info}, indent=2, default=float))
 
@@ -157,25 +167,32 @@ def prepare_deep(base: Path, dev: pd.DataFrame, rows: pd.DataFrame, P: dict) -> 
         meta = pd.concat([meta_dev, mh], ignore_index=True)
         pred_rows = np.arange(len(meta_dev), len(meta))
         fit_mask = np.r_[np.ones(len(meta_dev), bool), np.zeros(len(mh), bool)]
-    m = meta.copy()
-    m.loc[~fit_mask, "label_end"] = pd.NaT
-    inner_start = P["boundary"] - pd.DateOffset(months=3)
-    e = m["label_end"]
-    rows_npz = {"train": np.nonzero((e <= P["boundary"]).to_numpy())[0],
-                "inner_train": np.nonzero((e <= inner_start).to_numpy())[0],
-                "inner_val": np.nonzero(((m["date"] >= inner_start) & (e <= P["boundary"])).to_numpy())[0],
-                "pred": pred_rows}
-    assert not set(rows_npz["pred"]) & set(rows_npz["train"]), "prediction rows overlap training rows"
+    rows_npz = ho.deep_row_sets(meta, fit_mask, pred_rows, P["boundary"])
     np.save(d / "X.npy", X.astype(np.float16))
     np.save(d / "mask.npy", M)
     np.save(d / "static.npy", S.astype(np.float32))
-    meta_out = meta.copy()
-    meta_out.loc[~fit_mask, "target"] = np.nan                     # no evaluation label leaves this machine
-    meta_out.to_parquet(d / "meta.parquet", index=False)
+    ho.strip_eval_targets(meta, fit_mask).to_parquet(d / "meta.parquet", index=False)
     np.savez(d / "rows.npz", **rows_npz)
     cfg = json.loads((ARTIFACTS / "deep" / "out_v2" / "DONE").read_text())["config"]
     (d / "config.json").write_text(json.dumps(cfg))
     print(f"deep inputs: {len(meta):,} rows, predict {len(pred_rows):,}", flush=True)
+
+
+def shadow_coverage() -> None:
+    """Record which features were observed on the shadow decision date(s) next to the committed
+    predictions (no labels exist; the read is logged as a shadow touch)."""
+    path = ROOT / "reports" / "shadow_predictions.json"
+    info = json.loads(path.read_text())
+    if "feature_coverage" in info:
+        return
+    rows = load_sample("shadow", horizon=7, reason="feature coverage for the committed shadow predictions",
+                       require_label=False)
+    cov = {f: round(float(rows[f].notna().mean()), 3) for f in FEATURES}
+    info["feature_coverage"] = cov
+    info["coverage_note"] = ("share of shadow rows with each raw feature observed; missing values entered the "
+                             "frozen ridge as the neutral rank 0. Positioning features are missing because the "
+                             "metrics archive ends at 2026-10-24 23:00, before the 00:00 decision.")
+    path.write_text(json.dumps(info, indent=2))
 
 
 def shadow(sp: ho.FinalSplit, base: Path) -> None:
@@ -188,7 +205,7 @@ def shadow(sp: ho.FinalSplit, base: Path) -> None:
     p, _ = ho.final_ridge(sp, rows)
     out = p[["date", "symbol", "pred"]]
     path = ROOT / "reports" / "shadow_predictions.csv"
-    out.to_csv(path, index=False, float_format="%.8f")
+    out.to_csv(path, index=False, float_format="%.8f", lineterminator="\n")   # hash = committed bytes
     digest = hashlib.sha256(path.read_bytes()).hexdigest()
     (ROOT / "reports" / "shadow_predictions.json").write_text(json.dumps({
         "utc": datetime.now(timezone.utc).isoformat(timespec="seconds"), "git_commit": git_commit(),
@@ -232,7 +249,7 @@ def sharpe_block(daily: pd.DataFrame, n_trials: int) -> dict:
     return out
 
 
-def report(rehearsal: bool) -> None:
+def report(rehearsal: bool, note: str = "reports/holdout.md") -> None:
     P = paths(rehearsal)
     base, rep, fig = P["base"], P["report"], P["fig"]
     fig.mkdir(parents=True, exist_ok=True)
@@ -357,9 +374,19 @@ def report(rehearsal: bool) -> None:
     # drift: PSI of the top-5 SHAP features (raw values, dev vs evaluation window)
     shap = pd.read_parquet(base / "ridge_shap.parquet")
     top5 = shap[ridge_columns()].abs().mean().sort_values(ascending=False).head(5).index
+    def feat_ic(df, f):
+        return float(triage.xs_ic(df, f, "y_total_7d").mean())
+
     psi = pd.DataFrame([{"feature": c.removeprefix("r_"), "mean |SHAP|": float(shap[c].abs().mean()),
-                         "PSI": ho.psi(dev_val[c.removeprefix("r_")], rows[c.removeprefix("r_")])} for c in top5])
-    psi["status"] = np.where(psi["PSI"] > 0.25, "retrain", np.where(psi["PSI"] >= 0.10, "watch", "stable"))
+                         "PSI raw level": ho.psi(dev_val[c.removeprefix("r_")], rows[c.removeprefix("r_")]),
+                         "IC dev": feat_ic(dev_val, c.removeprefix("r_")),
+                         "IC holdout": feat_ic(labeled, c.removeprefix("r_"))} for c in top5])
+    psi["level status"] = np.where(psi["PSI raw level"] > 0.25, "retrain",
+                                   np.where(psi["PSI raw level"] >= 0.10, "watch", "stable"))
+    psi["relation"] = np.where(np.sign(psi["IC dev"]) != np.sign(psi["IC holdout"]), "sign flipped",
+                               np.where((psi["IC holdout"].abs() < 0.5 * psi["IC dev"].abs()), "weakened", "held"))
+    if not rehearsal:
+        shadow_coverage()
 
     # tail attribution in the holdout
     worst = runs_h["ridge"].nsmallest(5, "ret")[["ret", "price", "funding", "worst_name", "worst_name_pnl"]].reset_index()
@@ -380,7 +407,7 @@ def report(rehearsal: bool) -> None:
                       f"{P['boundary'].date()}..{P['end'].date()}", "final fit on all dev rows; frozen",
                       {"ridge_ic": sig_h["ridge"]["mean"], "ridge_net_sharpe": sh_h["ridge"]["sharpe"],
                        "signal_pattern": pat_sig, "pnl_pattern": pat_pnl},
-                      decision=f"signal: {pat_sig}; PnL: {pat_pnl}", gate="headline", notes="reports/holdout.md")
+                      decision=f"signal: {pat_sig}; PnL: {pat_pnl}", gate="headline", notes=note)
 
 
 def make_figures(fig, runs_v, runs_h, btc_v, btc_h, sig_v, sig_h, sh_v, sh_h, regime, shap, rows, ladder, P) -> dict:
@@ -500,6 +527,11 @@ def make_figures(fig, runs_v, runs_h, btc_v, btc_h, sig_v, sig_h, sh_v, sh_h, re
 
 def write_report(P, conf, head, desc, cov, regime, psi, worst, q_t, figs, pat_sig, pat_pnl, drift_pq, drift_pt,
                  sig_v, sig_h, sh_v, sh_h, n_trials, shadow_info, has_deep) -> None:
+    v, h = sig_v["ridge"], sig_h["ridge"]
+    overlap = h["ci_low"] <= v["ci_high"] and v["ci_low"] <= h["ci_high"]
+    noise_note = (f" The validation and holdout IC intervals overlap ([{v['ci_low']:+.3f}, {v['ci_high']:+.3f}] vs "
+                  f"[{h['ci_low']:+.3f}, {h['ci_high']:+.3f}]), so the difference between them is within sampling "
+                  "error: read the IC as having held, not as a measured improvement." if overlap else "")
     title = "Holdout REHEARSAL (pseudo-holdout inside dev, not a result)" if P["rehearsal"] else "Holdout evaluation (W6)"
     verdict = "PASS" if conf["pass"] else "FAIL"
     lost = ("signal gate (holdout IC CI includes 0)" if sig_h["ridge"]["ci_low"] <= 0 else
@@ -509,6 +541,7 @@ def write_report(P, conf, head, desc, cov, regime, psi, worst, q_t, figs, pat_si
                   f"""- **Frozen predictions**: {shadow_info['n_rows']} ridge predictions for the decision date(s) {', '.join(shadow_info['decision_dates'])}, written to `reports/shadow_predictions.csv`.
 - **Commitment**: SHA-256 `{shadow_info['sha256']}`, committed with this report.
 - **Realized labels so far**: {shadow_info['labels_realized']}. The snapshot ends 2026-10-24 and a 7-day label needs data through d + 7.
+- **Inputs were incomplete on that date**: {', '.join(f'`{k}`' for k, v in shadow_info.get('feature_coverage', {}).items() if v < 0.5) or 'none'} were mostly missing and entered as the neutral rank. The shadow test therefore checks a degraded-input version of the frozen model.
 - **Later evaluation**: extending the snapshot (`tools/daily_update.py`, then `scripts/build_dataset.py` with a later `snapshot_end_exclusive`) and scoring these exact predictions tests a forecast made before its outcome.""")
     text = f"""# {title}
 
@@ -524,7 +557,7 @@ The result was written to `{'artifacts/holdout_rehearsal/confirmatory.json' if P
 
 {md(head)}
 
-**Outcome (Chapter 20 patterns, registered rules)**: the signal **{pat_sig}**; the net PnL is **{pat_pnl}**.
+**Outcome (Chapter 20 patterns, registered rules)**: the signal **{pat_sig}**; the net PnL is **{pat_pnl}**.{noise_note}
 
 ## All models on the holdout (only ridge is confirmatory)
 
@@ -556,7 +589,11 @@ The result was written to `{'artifacts/holdout_rehearsal/confirmatory.json' if P
 
 {md(regime)}
 
-**Feature drift (PSI, dev vs holdout; watch 0.10–0.25, retrain > 0.25)**
+**Feature drift, top-5 SHAP features**
+
+- **PSI raw level** compares each feature's raw values between dev and holdout (watch 0.10–0.25, retrain > 0.25).
+- **What the model actually reads**: within-date ranks, which are uniform by construction. A raw-level shift, such as `log_age` rising as every contract ages, therefore does not move the model's inputs.
+- **The model-relevant check** is whether the feature's relation to the label held: the IC in dev vs the holdout, in the **relation** column.
 
 {md(psi)}
 
@@ -583,7 +620,8 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("stage", choices=["predict", "report"])
     ap.add_argument("--rehearsal", action="store_true")
+    ap.add_argument("--note", default="reports/holdout.md")
     a = ap.parse_args()
     if a.stage == "predict" and not a.rehearsal and os.environ.get("HOLDOUT_UNSEAL") != "1":
         raise SystemExit("set HOLDOUT_UNSEAL=1 for the single registered holdout run")
-    {"predict": predict, "report": report}[a.stage](a.rehearsal)
+    predict(a.rehearsal) if a.stage == "predict" else report(a.rehearsal, a.note)
