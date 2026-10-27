@@ -32,6 +32,23 @@ python scripts/data_quality_report.py
 python -m pytest
 ```
 
+The research pipeline after the data build, in order (each step is registered in `config/`
+before it runs, and logs to `run_log.csv`):
+
+```bash
+python scripts/run_triage.py          # W3 feature triage      -> reports/triage.md
+python scripts/run_models.py          # W4 baseline ladder     -> reports/models.md
+python scripts/diagnose_models.py     #    W4 diagnosis        -> reports/models_diagnosis.md
+python scripts/run_backtest.py        # W5 backtest and risk   -> reports/backtest.md
+python scripts/run_deep.py prepare    # rung 4 (optional), then Colab: see scripts/colab/README.md
+python scripts/run_deep.py evaluate   #                        -> reports/deep.md
+HOLDOUT_UNSEAL=1 python scripts/run_holdout.py predict   # W6, the single holdout touch
+python scripts/run_holdout.py report  #                        -> reports/holdout.md
+```
+
+`run_holdout.py predict` refuses to run twice: the holdout is read once
+(`ledger/holdout_touches.csv`). Its confirmatory result is in `reports/holdout_confirmatory.json`.
+
 The raw snapshot in `data/` was collected with the scripts in `tools/`:
 - `fetch_universe_ext.py`: daily klines.
 - `backfill_metrics.py`: data.binance.vision metrics.
