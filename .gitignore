@@ -12,5 +12,6 @@ __pycache__/
 # Course PDFs are course material, not ours to redistribute.
 doc/*.pdf
 
-# Course-requirement notes: kept locally, not published.
+# Course notes (requirements summary, topic proposals): kept locally, not published.
 MIDTERM_REQUIREMENTS.md
+TOPIC_PROPOSALS.md
