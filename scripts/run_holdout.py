@@ -4,6 +4,7 @@
     python scripts/run_deep.py holdout-train --data artifacts/holdout/deep --out artifacts/holdout/deep_out
                                                           # Colab: deep_v2 final fit, no labels
     python scripts/run_holdout.py report  [--rehearsal]   # headline table, figures, diagnosis
+    python scripts/run_holdout.py report --rerun-dir DIR  # reproduce the report into DIR; no run log
 
 ``--rehearsal`` runs the same code on a pseudo-holdout inside dev (2025-04-25..2025-10-24) and
 writes only to artifacts/holdout_rehearsal/. Without it, `predict` reads the sealed holdout once
@@ -249,19 +250,23 @@ def sharpe_block(daily: pd.DataFrame, n_trials: int) -> dict:
     return out
 
 
-def report(rehearsal: bool, note: str = "reports/holdout.md") -> None:
+def report(rehearsal: bool, note: str = "reports/holdout.md", rerun_dir: Path | None = None) -> None:
+    """``rerun_dir``: write the report and figures there instead, and log nothing (reproduction
+    check from cached artifacts; the sealed holdout is not read)."""
     P = paths(rehearsal)
+    if rerun_dir is not None:
+        P.update(report=rerun_dir, fig=rerun_dir / "figures")
     base, rep, fig = P["base"], P["report"], P["fig"]
     fig.mkdir(parents=True, exist_ok=True)
     cfg_bt = yaml.safe_load(open(ROOT / "config" / "backtest.yaml", encoding="utf-8"))
-    n_trials = trials_run()
+    n_trials = trials_run(before_holdout=True)
     rows = pd.read_parquet(base / "eval_sample.parquet")
     labeled = rows[rows["y_total_7d"].notna()]
     hold = {k: pd.read_parquet(base / f"preds_{k}.parquet") for k in ("ridge", "rule_carry", "lightgbm")}
     deep_path = base / "deep_out" / "predictions.parquet"
     if deep_path.exists():
         hold["deep_v2"] = pd.read_parquet(deep_path)
-    conf = json.loads((base / "confirmatory.json" if rehearsal else rep / "holdout_confirmatory.json").read_text())
+    conf = json.loads((base / "confirmatory.json" if rehearsal else ROOT / "reports" / "holdout_confirmatory.json").read_text())
 
     # validation side: dev out-of-fold predictions before the boundary
     dev = load_sample("dev", horizon=7)
@@ -402,7 +407,7 @@ def report(rehearsal: bool, note: str = "reports/holdout.md") -> None:
                    if (not rehearsal and (ROOT / "reports" / "shadow_predictions.json").exists()) else None)
     write_report(P, conf, head, desc, cov, regime, psi, worst, q_t, figs, pat_sig, pat_pnl, drift_pq, drift_pt,
                  sig_v, sig_h, sh_v, sh_h, n_trials, shadow_info, "deep_v2" in hold)
-    if not rehearsal:
+    if not rehearsal and rerun_dir is None:
         runlog.append("W6_holdout", "report", {"config": "config/holdout.yaml"},
                       f"{P['boundary'].date()}..{P['end'].date()}", "final fit on all dev rows; frozen",
                       {"ridge_ic": sig_h["ridge"]["mean"], "ridge_net_sharpe": sh_h["ridge"]["sharpe"],
@@ -621,7 +626,8 @@ if __name__ == "__main__":
     ap.add_argument("stage", choices=["predict", "report"])
     ap.add_argument("--rehearsal", action="store_true")
     ap.add_argument("--note", default="reports/holdout.md")
+    ap.add_argument("--rerun-dir", type=Path, default=None)
     a = ap.parse_args()
     if a.stage == "predict" and not a.rehearsal and os.environ.get("HOLDOUT_UNSEAL") != "1":
         raise SystemExit("set HOLDOUT_UNSEAL=1 for the single registered holdout run")
-    predict(a.rehearsal) if a.stage == "predict" else report(a.rehearsal, a.note)
+    predict(a.rehearsal) if a.stage == "predict" else report(a.rehearsal, a.note, a.rerun_dir)

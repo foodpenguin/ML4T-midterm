@@ -1,21 +1,21 @@
-strategy,family,trial,description,n_trials,status,registered_utc,notes
-perp_crowding_premium,F0_prior,xs_explore_v1,price momentum/reversal t-tests,72,closed,2026-08-29,prior exposure; see ledger/prior_exposure.md
-perp_crowding_premium,F0_prior,xs_explore_v2,price momentum/reversal t-tests,63,closed,2026-08-29,prior exposure
-perp_crowding_premium,F0_prior,xs_cap20000,price momentum/reversal with costs and OOS split,96,closed,2026-08-29,prior exposure
-perp_crowding_premium,F0_prior,smallcap_system,small-cap traded system sensitivity,12,closed,2026-08-29,prior exposure
-perp_crowding_premium,F0_prior,run_momentum,top-50 momentum backtests,16,closed,2026-07-14,prior exposure
-perp_crowding_premium,F0_prior,run_carry,top-50 funding carry + cash-and-carry,9,closed,2026-07-14,prior exposure; overlaps holdout
-perp_crowding_premium,F0_prior,analyze_alpha,hourly positioning long-short t-tests,36,closed,2026-08-24,prior exposure; overlaps holdout
-perp_crowding_premium,F0_prior,lp_pools,DEX LP pool net yield t-tests,27,closed,2026-08-29,prior exposure; unrelated asset
-perp_crowding_premium,F1_rule,rule_carry,score = -xs rank of fund_7d; no fitting,1,registered,2026-10-26,rung 1 baseline
-perp_crowding_premium,F2_features,triage,gates 1-5 on 24 candidates (20 name-level + 4 market-state),24,registered,2026-10-26,config/triage.yaml; mechanism checks on top 3 add no new candidates
-perp_crowding_premium,F3_ridge,alpha_grid,ridge alpha logspace(-2 6 9) on 14 non-STOP ranks; nested per fold,9,registered,2026-10-27,rung 2; config/models.yaml
-perp_crowding_premium,F4_lgbm,optuna,lightgbm l1; optuna 50 trials on a pre-validation window; frozen across folds,50,registered,2026-10-27,rung 3; config/models.yaml
-perp_crowding_premium,F5_deep,seq_xs_attention,hourly TCN encoder + cross-sectional attention; 8-config grid on the pre-validation window,8,registered,2026-10-27,rung 4; config/deep.yaml; 5 seeds per fold are not trials
-perp_crowding_premium,F6_ensemble,top3,z-scored average of top 3 runs,1,planned_optional,2026-10-26,rung 5
-perp_crowding_premium,F7_rl_v2,rl_sizing,RL exposure/threshold policy over OOS predictions,0,dropped,2026-10-27,not run; see ledger/decisions.md (2026-10-27)
-perp_crowding_premium,F8_backtest,registered_variants,W5 reported variants (2 allocators; vol target; kill switch; 1-day delay; spreads x3; cost sweep),0,registered,2026-10-27,config/backtest.yaml; reported side by side; nothing selected by result
-perp_crowding_premium,F5_deep,optuna_v2,rung-4 Optuna TPE search on the pre-validation window,30,registered,2026-10-27,config/deep_v2.yaml; registered before evaluating the grid run
-perp_crowding_premium,F5_deep,ablation_static_only,deep_v2 config without the hourly-sequence branch,1,registered,2026-10-27,config/deep_v2.yaml; diagnostic of the temporal hypothesis
-perp_crowding_premium,F9_setup_v2,short_leg_tail,v2a liquidation cap (primary) + v2b cap and short eligibility; dev exploratory then shadow test,2,registered,2026-10-27,config/setup_v2.yaml; hindsight-motivated (ledger/decisions.md)
-perp_crowding_premium,F9_setup_v2,mc_robustness,setup v2 Monte Carlo robustness (squeeze injection grid; paired block bootstrap; ex-squeeze days); descriptive,0,registered,2026-10-27,config/setup_v2.yaml -> monte_carlo; not a trial; no parameter selected
+strategy,family,trial,description,n_trials,status,after_holdout,registered_utc,notes
+perp_crowding_premium,F0_prior,xs_explore_v1,price momentum/reversal t-tests,72,closed,False,2026-08-29,prior exposure; see ledger/prior_exposure.md
+perp_crowding_premium,F0_prior,xs_explore_v2,price momentum/reversal t-tests,63,closed,False,2026-08-29,prior exposure
+perp_crowding_premium,F0_prior,xs_cap20000,price momentum/reversal with costs and OOS split,96,closed,False,2026-08-29,prior exposure
+perp_crowding_premium,F0_prior,smallcap_system,small-cap traded system sensitivity,12,closed,False,2026-08-29,prior exposure
+perp_crowding_premium,F0_prior,run_momentum,top-50 momentum backtests,16,closed,False,2026-07-14,prior exposure
+perp_crowding_premium,F0_prior,run_carry,top-50 funding carry + cash-and-carry,9,closed,False,2026-07-14,prior exposure; overlaps holdout
+perp_crowding_premium,F0_prior,analyze_alpha,hourly positioning long-short t-tests,36,closed,False,2026-08-24,prior exposure; overlaps holdout
+perp_crowding_premium,F0_prior,lp_pools,DEX LP pool net yield t-tests,27,closed,False,2026-08-29,prior exposure; unrelated asset
+perp_crowding_premium,F1_rule,rule_carry,score = -xs rank of fund_7d; no fitting,1,registered,False,2026-10-26,rung 1 baseline
+perp_crowding_premium,F2_features,triage,gates 1-5 on 24 candidates (20 name-level + 4 market-state),24,registered,False,2026-10-26,config/triage.yaml; mechanism checks on top 3 add no new candidates
+perp_crowding_premium,F3_ridge,alpha_grid,ridge alpha logspace(-2 6 9) on 14 non-STOP ranks; nested per fold,9,registered,False,2026-10-27,rung 2; config/models.yaml
+perp_crowding_premium,F4_lgbm,optuna,lightgbm l1; optuna 50 trials on a pre-validation window; frozen across folds,50,registered,False,2026-10-27,rung 3; config/models.yaml
+perp_crowding_premium,F5_deep,seq_xs_attention,hourly TCN encoder + cross-sectional attention; 8-config grid on the pre-validation window,8,registered,False,2026-10-27,rung 4; config/deep.yaml; 5 seeds per fold are not trials
+perp_crowding_premium,F6_ensemble,top3,z-scored average of top 3 runs,1,planned_optional,False,2026-10-26,rung 5
+perp_crowding_premium,F7_rl_v2,rl_sizing,RL exposure/threshold policy over OOS predictions,0,dropped,False,2026-10-27,not run; see ledger/decisions.md (2026-10-27)
+perp_crowding_premium,F8_backtest,registered_variants,W5 reported variants (2 allocators; vol target; kill switch; 1-day delay; spreads x3; cost sweep),0,registered,False,2026-10-27,config/backtest.yaml; reported side by side; nothing selected by result
+perp_crowding_premium,F5_deep,optuna_v2,rung-4 Optuna TPE search on the pre-validation window,30,registered,False,2026-10-27,config/deep_v2.yaml; registered before evaluating the grid run
+perp_crowding_premium,F5_deep,ablation_static_only,deep_v2 config without the hourly-sequence branch,1,registered,False,2026-10-27,config/deep_v2.yaml; diagnostic of the temporal hypothesis
+perp_crowding_premium,F9_setup_v2,short_leg_tail,v2a liquidation cap (primary) + v2b cap and short eligibility; dev exploratory then shadow test,2,registered,True,2026-10-27,config/setup_v2.yaml; hindsight-motivated (ledger/decisions.md)
+perp_crowding_premium,F9_setup_v2,mc_robustness,setup v2 Monte Carlo robustness (squeeze injection grid; paired block bootstrap; ex-squeeze days); descriptive,0,registered,True,2026-10-27,config/setup_v2.yaml -> monte_carlo; not a trial; no parameter selected

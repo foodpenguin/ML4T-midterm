@@ -4,7 +4,7 @@ import pandas as pd
 import pytest
 
 from crowding import holdout as ho
-from crowding.config import DAY
+from crowding.config import DAY, ROOT
 
 
 def test_final_split_rows_respect_the_boundary():
@@ -96,3 +96,31 @@ def test_shadow_registered_test_rule():
     assert same["ci_low"] <= 0 <= same["ci_high"] and same["v2a_supported"]          # tail-only support
     assert not rs.registered_test(v1, v1 + rng.normal(0, 0.001, 200), better_tail, worse_tail)["v2a_supported"]
     assert rs.registered_test(v1, v1 + 0.002, worse_tail, worse_tail)["v2a_supported"]  # return edge
+
+
+def test_markdown_table_skips_captions_and_stops_at_the_table_end():
+    text = ("# Report\n\n## Headline table (ridge)\n\nA caption line.\n\n"
+            "| stage | value |\n|---|---|\n| Signal | +0.1 |\n| Costs | -0.2 |\n\nAfter.\n\n| other | t |\n|---|---|\n| x | y |\n")
+    t = ho.markdown_table(text, "## Headline table")
+    assert list(t.columns) == ["stage", "value"]
+    assert t["value"].tolist() == ["+0.1", "-0.2"]
+    with pytest.raises(ValueError):
+        ho.markdown_table("## Headline table\n\nno table\n", "## Headline table")
+
+
+@pytest.mark.skipif(not (ROOT / "artifacts" / "holdout" / "eval_sample.parquet").exists(),
+                    reason="needs the cached holdout artifacts (Drive)")
+def test_report_rerun_dir_has_no_side_effects(tmp_path):
+    """report --rerun-dir (used by notebooks/07_results) writes only inside its directory."""
+    import subprocess
+    import sys
+    watched = [ROOT / "run_log.csv", ROOT / "ledger" / "holdout_touches.csv"] + \
+        sorted((ROOT / "reports").rglob("*"))
+    before = {p: (p.stat().st_mtime_ns, p.stat().st_size) for p in watched if p.is_file()}
+    r = subprocess.run([sys.executable, "scripts/run_holdout.py", "report", "--rerun-dir", str(tmp_path)],
+                       cwd=ROOT, capture_output=True, text=True, encoding="utf-8")
+    assert r.returncode == 0, r.stderr[-2000:]
+    after = {p: (p.stat().st_mtime_ns, p.stat().st_size) for p in before}
+    assert after == before
+    assert not set((ROOT / "reports").rglob("*")) - set(watched)
+    assert (tmp_path / "holdout.md").exists() and len(list((tmp_path / "figures").glob("*.png"))) == 6

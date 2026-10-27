@@ -49,3 +49,14 @@ def test_frozen_ridge_reproduces_the_final_ridge():
     params = ho.freeze_ridge(sp)
     assert params["alpha"] == info["alpha"]
     assert np.allclose(ho.predict_frozen_ridge(params, rows), pred["pred"], atol=1e-10)
+
+
+def test_trials_before_holdout_exclude_post_holdout_families(tmp_path):
+    from crowding.ledger import trials_run
+    p = tmp_path / "ledger.csv"
+    pd.DataFrame({"strategy": "s", "family": ["F3_ridge", "F7_rl_v2", "F9_setup_v2"], "trial": ["a", "b", "c"],
+                  "description": "", "n_trials": [9, 4, 2], "status": ["registered", "dropped", "registered"],
+                  "after_holdout": [False, False, True],
+                  "registered_utc": "", "notes": ""}).to_csv(p, index=False)
+    assert trials_run(p) == 11
+    assert trials_run(p, before_holdout=True) == 9

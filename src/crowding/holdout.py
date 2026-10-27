@@ -163,3 +163,21 @@ def freeze_ridge(sp: FinalSplit) -> dict:
 def predict_frozen_ridge(params: dict, rows: pd.DataFrame) -> np.ndarray:
     z = (rows[params["columns"]].to_numpy() - np.asarray(params["mean"])) / np.asarray(params["scale"])
     return z @ np.asarray(params["coef"]) + params["intercept"]
+
+
+def markdown_table(text: str, heading: str) -> pd.DataFrame:
+    """The first markdown table after the line that starts with ``heading`` (caption lines and
+    blank lines before the table are skipped; the table ends at its first non-table line)."""
+    lines = text.splitlines()
+    start = next(i for i, ln in enumerate(lines) if ln.startswith(heading))
+    rows, inside = [], False
+    for ln in lines[start + 1:]:
+        if ln.startswith("|"):
+            inside = True
+            if not set(ln.replace("|", "").strip()) <= set("-: "):     # skip the |---| rule
+                rows.append([c.strip() for c in ln.strip().strip("|").split("|")])
+        elif inside:
+            break
+    if not rows:
+        raise ValueError(f"no table after {heading!r}")
+    return pd.DataFrame(rows[1:], columns=rows[0])

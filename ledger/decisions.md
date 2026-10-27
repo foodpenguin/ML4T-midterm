@@ -72,3 +72,16 @@ yet, so nothing here could be shaped by the registered test's data. The amendmen
 - **Guards and structure.** Shadow-period prices can enter PnL only after a logged shadow read in
   the same process. The variant definitions and the registered test now live in
   `src/crowding/setup_v2.py`, not in an exploration script.
+
+## 2026-10-27: Setup v2 Monte Carlo robustness (descriptive; no decision changed)
+
+Registered in `config/setup_v2.yaml -> monte_carlo` (commit `bd73678`) before any simulation;
+results in `reports/setup_v2_mc.md` (run R0042). No v2 parameter was changed.
+- **Where v2a's cap hurts.** v2a loses to v1 only when spikes of 2.5x or more fully revert and
+  come often (8 or more a year on top of the real path). At 24 a year its max drawdown is about
+  13 pp worse. When the move persists, even partly, v2a is better in almost every simulation.
+- **What the shadow test can show.** Resampling the dev period, the registered rule supports v2a
+  on 46% of 90-day paths and 57% of 180-day paths. Almost no path has a positive lower bound
+  on the return difference, so any support will come from the tail clause.
+- **Ordinary days.** Without the three squeeze days, v2a costs 1.4 bp a day
+  [-2.9, +0.1] against v1.

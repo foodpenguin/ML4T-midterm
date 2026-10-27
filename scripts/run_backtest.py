@@ -39,7 +39,7 @@ plt.rcParams.update({
     "axes.spines.top": False, "axes.spines.right": False, "axes.titlecolor": INK,
     "axes.titlesize": 10, "figure.dpi": 150,
 })
-N_TRIALS = trials_run()           # from ledger/research_ledger.csv, never typed in
+N_TRIALS = trials_run(before_holdout=True)   # from ledger/research_ledger.csv, never typed in
 NOTES = " ".join(sys.argv[1:]) or "reports/backtest.md"
 
 

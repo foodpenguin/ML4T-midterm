@@ -88,7 +88,7 @@ def main(notes: str = "reports/deep.md") -> None:
                           columns=["date", "symbol", "rank", "mean_qv_30d", "in_universe"])
     m = bt.build_market(bars, sett, uni[uni["in_universe"]].merge(feats, on=["date", "symbol"], how="left"))
     start, end = cfg["period"]["start"], cfg["period"]["end_exclusive"]
-    n_trials = trials_run()
+    n_trials = trials_run(before_holdout=True)
     bt_rows = []
     for k in ["ridge", "lightgbm"] + deep_names:
         daily = bt.run(m, preds[k].rename(columns={"pred": "score"}), start, end).daily

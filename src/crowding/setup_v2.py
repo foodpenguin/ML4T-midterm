@@ -21,14 +21,25 @@ def variant_kwargs(v2: dict) -> dict[str, dict]:
                     "short_vol_cap": 2 / 3}}
 
 
+def cvar95(r) -> float:
+    """Mean loss on the worst 5% of days (a positive number)."""
+    r = np.asarray(r, float)
+    return float(-r[r <= np.quantile(r, 0.05)].mean())
+
+
+def max_drawdown(r) -> float:
+    """Max drawdown of a daily return path from capital 1.0 (as backtest.metrics)."""
+    eq = pd.Series(np.cumprod(1 + np.asarray(r, float)))
+    return float((1 - eq / bt.drawdown_peak(eq)).max())
+
+
 def summarize(d: pd.DataFrame) -> dict:
     r = d["ret"]
     mt, ci = bt.metrics(d), sharpe_ci(r)
-    var = -r.quantile(0.05)
     return {"net_sharpe": mt["sharpe"], "ci_low": ci["ci_low"], "ci_high": ci["ci_high"],
             "gross_sharpe": mt["gross_sharpe"], "cagr": mt["cagr"], "max_drawdown": mt["max_drawdown"],
             "turnover_annual": mt["turnover_annual"],
-            "cvar95": float(-r[r <= -var].mean()), "worst_day": float(r.min()),
+            "cvar95": cvar95(r), "worst_day": float(r.min()),
             "liquidations": int(d["liquidations"].sum()),
             **{f"ret_{x}": float(r.get(pd.Timestamp(x), np.nan)) for x in SQUEEZE_DAYS}}
 
