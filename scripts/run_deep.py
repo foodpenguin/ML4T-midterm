@@ -106,7 +106,11 @@ def train(data: Path, out: Path, smoke: bool) -> None:
 
 
 def evaluate() -> None:
-    raise SystemExit("evaluate stage is added after training finishes")
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("deep_evaluate", ROOT / "scripts" / "deep_evaluate.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    mod.main()
 
 
 if __name__ == "__main__":
