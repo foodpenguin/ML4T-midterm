@@ -169,15 +169,16 @@ def markdown_table(text: str, heading: str) -> pd.DataFrame:
     """The first markdown table after the line that starts with ``heading`` (caption lines and
     blank lines before the table are skipped; the table ends at its first non-table line)."""
     lines = text.splitlines()
-    start = next(i for i, ln in enumerate(lines) if ln.startswith(heading))
-    rows, inside = [], False
+    start = next((i for i, ln in enumerate(lines) if ln.startswith(heading)), None)
+    if start is None:
+        raise ValueError(f"heading {heading!r} not found")
+    block = []
     for ln in lines[start + 1:]:
         if ln.startswith("|"):
-            inside = True
-            if not set(ln.replace("|", "").strip()) <= set("-: "):     # skip the |---| rule
-                rows.append([c.strip() for c in ln.strip().strip("|").split("|")])
-        elif inside:
+            block.append(ln)
+        elif block:
             break
-    if not rows:
+    rows = [[c.strip() for c in ln.strip().strip("|").split("|")] for ln in block]
+    if len(rows) < 2 or not all(set(c) <= set("-: ") and c for c in rows[1]):
         raise ValueError(f"no table after {heading!r}")
-    return pd.DataFrame(rows[1:], columns=rows[0])
+    return pd.DataFrame(rows[2:], columns=rows[0])          # rows[1] is the |---| rule

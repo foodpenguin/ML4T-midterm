@@ -108,8 +108,10 @@ def test_markdown_table_skips_captions_and_stops_at_the_table_end():
         ho.markdown_table("## Headline table\n\nno table\n", "## Headline table")
 
 
-@pytest.mark.skipif(not (ROOT / "artifacts" / "holdout" / "eval_sample.parquet").exists(),
-                    reason="needs the cached holdout artifacts (Drive)")
+@pytest.mark.skipif(not all((ROOT / p).exists() for p in (
+    "artifacts/holdout/eval_sample.parquet", "artifacts/predictions/ridge.parquet",
+    "data/processed/features.parquet", "data/UNIVERSE/daily_ohlcv_ext.csv")),
+    reason="needs data/ and artifacts/ from the Drive folder")
 def test_report_rerun_dir_has_no_side_effects(tmp_path):
     """report --rerun-dir (used by notebooks/07_results) writes only inside its directory."""
     import subprocess
@@ -124,3 +126,10 @@ def test_report_rerun_dir_has_no_side_effects(tmp_path):
     assert after == before
     assert not set((ROOT / "reports").rglob("*")) - set(watched)
     assert (tmp_path / "holdout.md").exists() and len(list((tmp_path / "figures").glob("*.png"))) == 6
+
+
+def test_markdown_table_errors_and_placeholder_rows():
+    with pytest.raises(ValueError, match="not found"):
+        ho.markdown_table("# Report\n", "## Headline table")
+    t = ho.markdown_table("## H\n\n| a | b |\n|:--|--:|\n| - | - |\n| x | 1 |\n", "## H")
+    assert t.values.tolist() == [["-", "-"], ["x", "1"]]           # a dash row is data, not a rule

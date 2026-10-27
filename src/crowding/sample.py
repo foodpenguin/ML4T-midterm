@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import csv
 import os
-import subprocess
 from datetime import datetime, timezone
 
 import numpy as np
@@ -17,6 +16,7 @@ import pandas as pd
 
 from .config import PROCESSED, ROOT, SEALED, setup
 from .features import FEATURES
+from .runlog import head_commit
 
 TOUCH_LOG = ROOT / "ledger" / "holdout_touches.csv"
 _TOUCHED: set[str] = set()     # sealed periods read (and logged) in this process
@@ -82,8 +82,7 @@ def _record_touch(period: str, reason: str) -> None:
             rows = [r for r in csv.DictReader(f) if r["period"] == period]
     if period == "holdout" and len(rows) >= allowed:
         raise PermissionError(f"holdout already touched {len(rows)} time(s); allowed {allowed}")
-    commit = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=ROOT,
-                            capture_output=True, text=True).stdout.strip()
+    commit = head_commit()
     new = not TOUCH_LOG.exists()
     with open(TOUCH_LOG, "a", newline="", encoding="utf-8") as f:
         w = csv.writer(f)

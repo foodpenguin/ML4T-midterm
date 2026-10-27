@@ -44,7 +44,8 @@ tested only on new data: [`reports/setup_v2_dev.md`](reports/setup_v2_dev.md),
 Download them from the shared Google Drive folder:
 **<https://drive.google.com/drive/folders/1xVm0xtljfZASO_C5JyxEC5JCv8ujLIaB?usp=drive_link>**
 
-Put the folders at the repository root so that these paths exist:
+The Drive folder holds two folders, `data/` and `artifacts/`. Copy both to the repository root
+(keep the names in lower case: Linux and macOS paths are case-sensitive), so that these paths exist:
 
 | Path | Size | Needed for |
 |---|---|---|
@@ -55,11 +56,15 @@ Put the folders at the repository root so that these paths exist:
 | `artifacts/holdout/` (`deep/` can be skipped) | ~15 MB | notebook 07 (headline table) |
 | `artifacts/deep/` | ~540 MB | optional: retraining the rung-4 deep model on Colab |
 
-In short: download `data/` (except the legacy `ALPHA/` and `LP/` folders) and `artifacts/`
-(except `artifacts/deep/` and `artifacts/holdout/deep/`).
+Then check the copy:
 
-`data/processed/manifest.json` records the SHA-256 of every input file, so you can check that
-your copy matches the one the reports were built from.
+```bash
+python scripts/check_data.py
+```
+
+It compares the raw inputs with `data/processed/manifest.json` (written when the dataset was
+built) and the processed tables and model artifacts with the committed `data_checksums.json`.
+It lists anything missing or different, and exits with code 1 if so.
 
 ## Reproduce
 

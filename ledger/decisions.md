@@ -77,9 +77,11 @@ yet, so nothing here could be shaped by the registered test's data. The amendmen
 
 Registered in `config/setup_v2.yaml -> monte_carlo` (commit `bd73678`) before any simulation;
 results in `reports/setup_v2_mc.md` (run R0042). No v2 parameter was changed.
-- **Where v2a's cap hurts.** v2a loses to v1 only when spikes of 2.5x or more fully revert and
-  come often (8 or more a year on top of the real path). At 24 a year its max drawdown is about
-  13 pp worse. When the move persists, even partly, v2a is better in almost every simulation.
+- **Where v2a's cap hurts.** v2a loses to v1 when spikes of 2.5x or more revert and come often.
+  If they fully revert, v2a loses from 8 a year on top of the real path (its Sharpe is higher in
+  only 8-12% of simulations), and at 24 a year its max drawdown is about 13 pp worse. If half the
+  move reverts, v2a still loses at 24 a year with 2.5x spikes (7%). When the move fully persists,
+  v2a is better in every simulation.
 - **What the shadow test can show.** Resampling the dev period, the registered rule supports v2a
   on 46% of 90-day paths and 57% of 180-day paths. Almost no path has a positive lower bound
   on the return difference, so any support will come from the tail clause.

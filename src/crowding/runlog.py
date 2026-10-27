@@ -5,17 +5,37 @@ import csv
 import hashlib
 import json
 import subprocess
+import warnings
 from datetime import datetime, timezone
 
 from .config import PROCESSED, ROOT
 
 
+def _git(*args: str) -> str | None:
+    """stdout of a git command in the repository, or None if git is unavailable or fails."""
+    try:
+        r = subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True)
+    except OSError:
+        return None
+    return r.stdout.strip() if r.returncode == 0 else None
+
+
+def head_commit() -> str:
+    """Short hash of HEAD; 'unknown' (with a warning) rather than an empty provenance field."""
+    out = _git("rev-parse", "--short", "HEAD")
+    if not out:
+        warnings.warn("git rev-parse failed: provenance recorded as 'unknown'")
+        return "unknown"
+    return out
+
+
 def git_commit() -> str:
-    out = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=ROOT,
-                         capture_output=True, text=True).stdout.strip()
-    dirty = subprocess.run(["git", "status", "--porcelain", "--", "src", "scripts", "config",
-                            "setup.yaml"], cwd=ROOT, capture_output=True, text=True).stdout.strip()
-    return out + ("-dirty" if dirty else "")
+    """HEAD plus '-dirty' when tracked code or configuration has uncommitted changes."""
+    head = head_commit()
+    dirty = _git("status", "--porcelain", "--", "src", "scripts", "config", "setup.yaml")
+    if dirty is None:
+        return head + "-status-unknown"
+    return head + ("-dirty" if dirty else "")
 
 
 def data_snapshot() -> str:

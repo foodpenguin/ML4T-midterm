@@ -43,7 +43,8 @@
 請從共用的 Google Drive 資料夾下載：
 **<https://drive.google.com/drive/folders/1xVm0xtljfZASO_C5JyxEC5JCv8ujLIaB?usp=drive_link>**
 
-放在 repo 根目錄，讓以下路徑存在：
+Drive 資料夾裡有 `data/` 與 `artifacts/` 兩個資料夾，請整個複製到 repo 根目錄（名稱保持小寫：Linux 與
+macOS 的路徑區分大小寫），讓以下路徑存在：
 
 | 路徑 | 大小 | 用途 |
 |---|---|---|
@@ -54,10 +55,14 @@
 | `artifacts/holdout/`（`deep/` 可略過） | 約 15 MB | notebook 07（headline table） |
 | `artifacts/deep/` | 約 540 MB | 選用：在 Colab 重新訓練第 4 階深度模型 |
 
-簡單說：下載 `data/`（舊的 `ALPHA/`、`LP/` 不需要）與 `artifacts/`（`artifacts/deep/` 與
-`artifacts/holdout/deep/` 不需要）。
+複製完後檢查：
 
-`data/processed/manifest.json` 記錄每個輸入檔的 SHA-256，可用來確認你的資料與產生報告時的版本一致。
+```bash
+python scripts/check_data.py
+```
+
+它會把原始輸入與 `data/processed/manifest.json`（建資料集時寫下）比對，並把處理後資料表與模型產物與已
+commit 的 `data_checksums.json` 比對；列出缺少或不一致的檔案，若有問題則以代碼 1 結束。
 
 ## 重現
 

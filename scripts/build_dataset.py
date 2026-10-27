@@ -29,20 +29,11 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from crowding.config import PROCESSED, RAW, SEALED, setup  # noqa: E402
 from crowding.features import build_features  # noqa: E402
-from crowding.io import load_daily_bars, load_funding_settlements, load_metrics  # noqa: E402
+from crowding.io import files_sha256 as sha256, load_daily_bars, load_funding_settlements, load_metrics  # noqa: E402
 from crowding.labels import build_labels  # noqa: E402
 from crowding.sample import seal  # noqa: E402
 from crowding.universe import build_universe  # noqa: E402
 
-
-def sha256(paths: list[Path]) -> str:
-    h = hashlib.sha256()
-    for p in sorted(paths):
-        h.update(p.name.encode())
-        with open(p, "rb") as f:
-            for chunk in iter(lambda: f.read(1 << 20), b""):
-                h.update(chunk)
-    return h.hexdigest()
 
 
 def git_commit() -> str:

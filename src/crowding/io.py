@@ -7,12 +7,25 @@ Timestamp conventions (setup.yaml -> data.timestamp_semantics):
 """
 from __future__ import annotations
 
+import hashlib
+
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
 from .config import DAY, RAW, snapshot_end
+
+
+def files_sha256(paths: list[Path]) -> str:
+    """One SHA-256 over several files (sorted by name; each name, then its bytes)."""
+    h = hashlib.sha256()
+    for p in sorted(paths):
+        h.update(p.name.encode())
+        with open(p, "rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                h.update(chunk)
+    return h.hexdigest()
 
 FUNDING_KNOWLEDGE_LAG = pd.Timedelta(minutes=1)
 METRIC_COLUMNS = ["oi", "oi_value", "top_acct_lsr", "top_pos_lsr", "global_acct_lsr",
