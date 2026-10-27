@@ -1,0 +1,38 @@
+# Rung 4, enhanced (registered 2026-10-27, AFTER the 8-config grid run finished training but
+# BEFORE any of its validation-fold predictions were evaluated). Adds an Optuna search and a
+# no-sequence ablation; the original grid run (config/deep.yaml) is kept and reported.
+registered_utc: "2026-10-27"
+status_of_grid_run: "trained on Colab (32 folds, 5 seeds); validation predictions downloaded, not evaluated"
+
+optuna_variant:
+  name: deep_v2
+  architecture: "same family as config/deep.yaml (TCN encoder + cross-sectional transformer)"
+  tuning: >
+    Fixed-holdout, identical windows to the grid run and LightGBM: train on rows with
+    label_end <= 2022-12-01, score by mean daily IC on 2022-12-01..2023-02-28. Optuna TPE,
+    seed 42, one model seed per trial, early stopping (patience 5) inside each trial.
+  trials: 30
+  search_space:
+    width: [16, 32, 64, 96]              # categorical
+    learning_rate: [0.0001, 0.003]       # log scale
+    dropout: [0.0, 0.5]
+    weight_decay: [0.00001, 0.1]         # log scale
+    xs_layers: [1, 2, 3]                 # cross-sectional transformer depth
+    batch_dates: [4, 8, 16]              # categorical
+  per_fold: "as config/deep.yaml: inner-window early stopping, refit, 5 seeds averaged, conformal from the inner model"
+
+ablation:
+  name: deep_static_only
+  definition: "deep_v2's tuned config with the hourly-sequence branch removed: the token is built from the 14 tabular ranks + mkt_fund_7d only, then the same cross-sectional transformer"
+  trials: 1
+  purpose: >
+    Diagnostic, not a deployment candidate. The paired daily-IC difference deep_v2 - deep_static_only
+    (NW 95% CI) measures what the hourly positioning paths add beyond non-linear, cross-sectionally
+    aware use of the tabular features. That difference tests the temporal half of the rung-4 hypothesis.
+
+rung4_candidate_rule: >
+  Exactly one deep model is the rung-4 candidate: whichever of the grid run (deep) and deep_v2 has
+  the higher tuning-window IC (pre-validation, already logged in each run's tuning.csv). Validation
+  results play no part in this choice. The candidate is then promoted over ridge only under the
+  rule in config/deep.yaml (paired NW 95% CI above zero against both ridge and lightgbm).
+reporting: "all three deep models (grid, optuna, static-only) evaluated on the same rows and folds and reported side by side; trial count for deflation includes all of them (8 + 30 + 1)"
