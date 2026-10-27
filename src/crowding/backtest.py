@@ -35,6 +35,7 @@ class Market:
     rank: np.ndarray            # liquidity rank for the cost tier (ffilled)
     adv: np.ndarray             # mean quote volume, USD (ffilled)
     vol: np.ndarray             # daily return volatility (ffilled)
+    high: np.ndarray | None = None   # bar high over [t, t+1) (NaN if no valid bar); setup v2
 
     def row(self, date: pd.Timestamp) -> int:
         return int(self.dates.get_loc(date))
@@ -57,8 +58,9 @@ def build_market(bars: pd.DataFrame, settlements: pd.DataFrame, cost_inputs: pd.
         w = w.reindex(index=dates, columns=symbols).ffill()
         return w.fillna(default).to_numpy(float)
 
+    high = wide(bars, "high", extend=1).reindex(index=dates, columns=symbols)
     return Market(dates, symbols, mark.to_numpy(float), funding.to_numpy(float),
-                  mat("rank", 100.0), mat("mean_qv_30d", 5e6), mat("rvol_20d", 0.05))
+                  mat("rank", 100.0), mat("mean_qv_30d", 5e6), mat("rvol_20d", 0.05), high.to_numpy(float))
 
 
 def one_way_cost(m: Market, t: int, idx: np.ndarray, order_usd: np.ndarray,
@@ -83,8 +85,12 @@ def _cap(w: np.ndarray, total: float, cap: float) -> np.ndarray:
     return w
 
 
-def target_weights(scores: pd.Series, vol: pd.Series, allocator: str, long_only: bool) -> pd.Series:
-    """One tranche's weights from one date's scores (setup.yaml mapping)."""
+def target_weights(scores: pd.Series, vol: pd.Series, allocator: str, long_only: bool,
+                   short_vol_cap: float | None = None) -> pd.Series:
+    """One tranche's weights from one date's scores (setup.yaml mapping).
+
+    ``short_vol_cap`` (setup v2b): names above that cross-sectional quantile of ``vol`` cannot be
+    shorted; the short leg is the k lowest scores among the eligible names."""
     s = scores.dropna()
     n = len(s)
     if n < setup()["universe"]["min_names_to_trade"]:
@@ -94,7 +100,12 @@ def target_weights(scores: pd.Series, vol: pd.Series, allocator: str, long_only:
         return pd.Series(_cap(np.ones(n), 1.0, cap), index=s.index)
     k = max(1, int(np.floor(0.2 * n)))
     order = s.sort_values()
-    legs = {1.0: order.index[-k:], -1.0: order.index[:k]}
+    shorts = order.index[:k]
+    if short_vol_cap is not None:
+        v = vol.reindex(order.index)
+        eligible = order.index[(v <= v.quantile(short_vol_cap)).to_numpy() | v.isna().to_numpy()]
+        shorts = eligible[:k]
+    legs = {1.0: order.index[-k:], -1.0: shorts}
     out = []
     for sign, names in legs.items():
         if allocator == "inverse_vol":
@@ -116,12 +127,19 @@ def run(m: Market, scores: pd.DataFrame, start: str, end_exclusive: str, *,
         allocator: str = "equal_weight", long_only: bool = False, cost_mult: float = 1.0,
         spread_mult: float = 1.0, vol_target: float | None = None,
         kill_switch: list | None = None, capital: float | None = None,
-        pnl_limit: str | None = None) -> Result:
+        pnl_limit: str | None = None, short_liquidation: float | None = None,
+        liquidation_fee: float = 0.0, short_vol_cap: float | None = None) -> Result:
     """Simulate the 7-tranche book from ``start`` to ``end_exclusive`` (PnL days).
 
     ``pnl_limit`` is the latest instant whose prices may enter PnL: the holdout start by
     default (dev work); the holdout run passes the forward-shadow start explicitly.
+
+    Setup v2: with ``short_liquidation`` = L, a short whose day high reaches entry x (1 + L) is
+    liquidated that day at exactly that price (plus ``liquidation_fee`` on its notional) and stays
+    flat until its tranche is rebuilt. ``short_vol_cap`` restricts short eligibility (v2b).
     """
+    if short_liquidation is not None and m.high is None:
+        raise ValueError("short_liquidation needs bar highs (build_market provides them)")
     capital = capital or setup()["costs"]["capital_usd"]
     t0, t1 = m.row(pd.Timestamp(start)), m.row(pd.Timestamp(end_exclusive))
     ev = setup()["evaluation"]
@@ -163,7 +181,7 @@ def run(m: Market, scores: pd.DataFrame, start: str, end_exclusive: str, *,
         k = (t - t0) % TRANCHES
         new = np.zeros(N)
         if date in sc.index:
-            tw = target_weights(sc.loc[date], vol_df.loc[date], allocator, long_only)
+            tw = target_weights(sc.loc[date], vol_df.loc[date], allocator, long_only, short_vol_cap)
             if len(tw):
                 new[m.symbols.get_indexer(tw.index)] = tw.to_numpy()
         # Trades, per name, as a fraction of capital: tranche k moves from its old weights at
@@ -180,10 +198,22 @@ def run(m: Market, scores: pd.DataFrame, start: str, end_exclusive: str, *,
         gross_book = np.abs(w).sum() / TRANCHES
         # 3) PnL from the open of t to the open of t+1
         dp = (m.mark[t + 1] - m.mark[t]) / entry
+        n_liq = 0
+        if short_liquidation is not None:
+            liq_px = entry * (1 + short_liquidation)
+            hit = (w < 0) & np.nan_to_num(m.high[t] >= liq_px)       # (tranche, name)
+            if hit.any():
+                exit_px = np.maximum(liq_px, m.mark[t])                # never better than today's open
+                dp = np.where(hit, (exit_px - m.mark[t]) / entry, dp)
+                fee = float((np.abs(w[hit]) * exit_px[hit] / entry[hit]).sum()) / TRANCHES
+                cost += scale * fee * liquidation_fee
+                n_liq = int(hit.sum())
         per_name = (w * np.nan_to_num(dp)).sum(axis=0) / TRANCHES
         price = float(per_name.sum())
         worst_j = int(np.argmin(per_name))
         fund = float(-(w * m.funding[t]).sum() / TRANCHES)
+        if n_liq:
+            w[hit] = 0.0                                               # liquidated: flat until rebuild
         base_hist.append(price + fund)         # unscaled book return: what the vol target reads
         r = scale * (price + fund) - cost
         equity *= 1 + r
@@ -194,7 +224,8 @@ def run(m: Market, scores: pd.DataFrame, start: str, end_exclusive: str, *,
                      "turnover": float(trade.sum()), "gross_exposure": scale * gross_book,
                      "net_exposure": scale * float(agg.sum()), "hhi": float((agg ** 2).sum() / max(np.abs(agg).sum(), 1e-12) ** 2),
                      "n_long": int((agg > 0).sum()), "n_short": int((agg < 0).sum()), "drawdown": dd,
-                     "worst_name": m.symbols[worst_j], "worst_name_pnl": scale * float(per_name[worst_j])})
+                     "worst_name": m.symbols[worst_j], "worst_name_pnl": scale * float(per_name[worst_j]),
+                     "liquidations": n_liq})
         if (t - t0) % 28 == 0:
             samples.append((date, pd.Series(agg, index=m.symbols)[agg != 0]))
         scale_prev = scale

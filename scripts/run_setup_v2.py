@@ -1,0 +1,161 @@
+"""Setup v2 dev exploration (config/setup_v2.yaml): v1 vs v2a (primary) vs v2b on the dev
+out-of-fold period. Exploratory only: these dev days motivated v2.
+
+Run from the repository root:
+    python scripts/run_setup_v2.py
+Writes reports/setup_v2_dev.md, reports/setup_v2_dev.csv and run-log rows (family F9_setup_v2).
+"""
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import yaml
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
+
+from crowding import backtest as bt  # noqa: E402
+from crowding import runlog  # noqa: E402
+from crowding.config import ARTIFACTS, PROCESSED  # noqa: E402
+from crowding.io import load_daily_bars  # noqa: E402
+from crowding.sample import load_sample  # noqa: E402
+from crowding.stats import newey_west, sharpe_ci  # noqa: E402
+
+SQUEEZE_DAYS = ["2025-04-30", "2025-09-07", "2025-09-08"]
+
+
+def variant_kwargs(v2: dict) -> dict[str, dict]:
+    a = v2["variants"]["v2a_liquidation_cap"]
+    return {"v1": {},
+            "v2a": {"short_liquidation": a["liquidation_threshold"], "liquidation_fee": a["liquidation_fee"]},
+            "v2b": {"short_liquidation": a["liquidation_threshold"], "liquidation_fee": a["liquidation_fee"],
+                    "short_vol_cap": 2 / 3}}
+
+
+def summarize(d: pd.DataFrame) -> dict:
+    r = d["ret"]
+    mt, ci = bt.metrics(d), sharpe_ci(r)
+    var = -r.quantile(0.05)
+    return {"net_sharpe": mt["sharpe"], "ci_low": ci["ci_low"], "ci_high": ci["ci_high"],
+            "gross_sharpe": mt["gross_sharpe"], "cagr": mt["cagr"], "max_drawdown": mt["max_drawdown"],
+            "cvar95": float(-r[r <= -var].mean()), "worst_day": float(r.min()),
+            "liquidations": int(d["liquidations"].sum()),
+            **{f"ret_{x}": float(r.get(pd.Timestamp(x), np.nan)) for x in SQUEEZE_DAYS}}
+
+
+def md(df: pd.DataFrame, nd: int = 3) -> str:
+    cols = [str(c) for c in df.columns]
+    lines = ["| " + " | ".join(cols) + " |", "|" + "---|" * len(cols)]
+    for _, r in df.iterrows():
+        lines.append("| " + " | ".join(f"{v:.{nd}f}" if isinstance(v, (float, np.floating)) else str(v)
+                                       for v in r.values) + " |")
+    return "\n".join(lines)
+
+
+def main() -> None:
+    v2 = yaml.safe_load(open(ROOT / "config" / "setup_v2.yaml", encoding="utf-8"))
+    cfg_bt = yaml.safe_load(open(ROOT / "config" / "backtest.yaml", encoding="utf-8"))
+    start, end = cfg_bt["period"]["start"], cfg_bt["period"]["end_exclusive"]
+    bars = load_daily_bars()
+    sett = pd.read_parquet(PROCESSED / "settlements.parquet")
+    feats = pd.read_parquet(PROCESSED / "features.parquet", columns=["date", "symbol", "rvol_20d"])
+    uni = pd.read_parquet(PROCESSED / "universe.parquet", columns=["date", "symbol", "rank", "mean_qv_30d", "in_universe"])
+    m = bt.build_market(bars, sett, uni[uni["in_universe"]].merge(feats, on=["date", "symbol"], how="left"))
+
+    smp = load_sample("dev", horizon=7)
+    signals = {"ridge": pd.read_parquet(ARTIFACTS / "predictions" / "ridge.parquet").rename(columns={"pred": "score"}),
+               "rule_carry": smp[["date", "symbol"]].assign(score=-smp["r_fund_7d"])}
+    runs, rows = {}, []
+    for sig, scores in signals.items():
+        for var, kw in variant_kwargs(v2).items():
+            if sig == "rule_carry" and var == "v2b":
+                continue
+            d = bt.run(m, scores[["date", "symbol", "score"]], start, end, **kw).daily
+            runs[(sig, var)] = d
+            rows.append({"signal": sig, "variant": var, **summarize(d)})
+            print(f"{sig} {var}: net Sharpe {rows[-1]['net_sharpe']:+.2f}, liquidations {rows[-1]['liquidations']}", flush=True)
+    t = pd.DataFrame(rows)
+    t.to_csv(ROOT / "reports" / "setup_v2_dev.csv", index=False)
+
+    diffs = []
+    for sig in signals:
+        for var in ("v2a", "v2b"):
+            if (sig, var) not in runs:
+                continue
+            dr = (runs[(sig, var)]["ret"] - runs[(sig, "v1")]["ret"]).dropna()
+            mean, se = newey_west(dr.to_numpy(), 7)
+            diffs.append({"comparison": f"{sig}: {var} - v1", "mean daily diff (bp)": mean * 1e4,
+                          "ci_low (bp)": (mean - 1.96 * se) * 1e4, "ci_high (bp)": (mean + 1.96 * se) * 1e4,
+                          "days": len(dr)})
+    diffs = pd.DataFrame(diffs)
+
+    liq = runs[("ridge", "v2a")]
+    liq_days = liq[liq["liquidations"] > 0][["liquidations", "ret", "worst_name", "worst_name_pnl"]].reset_index()
+    liq_days["date"] = liq_days["date"].dt.date
+    worst = {var: runs[("ridge", var)].nsmallest(5, "ret")[["ret", "worst_name", "worst_name_pnl"]].reset_index()
+             for var in ("v1", "v2a")}
+    for w in worst.values():
+        w["date"] = w["date"].dt.date
+
+    show = t[["signal", "variant", "net_sharpe", "ci_low", "ci_high", "gross_sharpe", "max_drawdown", "cvar95",
+              "worst_day", "liquidations"] + [f"ret_{x}" for x in SQUEEZE_DAYS]]
+    text = f"""# Setup v2 — dev exploration (EXPLORATORY, not confirmatory)
+
+Generated by `scripts/run_setup_v2.py` under `config/setup_v2.yaml` (registered in `f371ea0`
+before any v2 run).
+
+**Why this is exploratory**: the dev days below (2023-03-01..2025-10-24), including the squeezes
+that motivated v2, were seen before v2 was designed. These numbers show whether the mechanics
+behave as intended; they are not evidence that v2 is better. The registered test of v2 is the
+forward shadow period (`scripts/run_shadow.py`, at least {v2['shadow_test']['minimum_length_days']}
+realized days). The holdout was used once by v1 and is not used by v2.
+
+- **v2a (primary)**: each short is liquidated like a 1x isolated-margin position when the day's high reaches entry × 1.90. The liquidation fee is 0.5% of the position's notional.
+- **v2b (secondary)**: v2a, plus the top rvol tercile is not eligible for the short leg.
+
+## Results (equal weight, same costs and protocol as W5)
+
+{md(show)}
+
+Columns `ret_YYYY-MM-DD` are the book's net return on the squeeze days identified in W5.
+
+## Daily return difference vs v1 (NW 95% CI)
+
+{md(diffs, 2)}
+
+## Liquidations under v2a (ridge)
+
+{md(liq_days, 4) if len(liq_days) else 'none'}
+
+## Worst days, ridge v1 vs v2a
+
+**v1**
+
+{md(worst['v1'], 4)}
+
+**v2a**
+
+{md(worst['v2a'], 4)}
+
+## What could break this
+
+- **Daily highs only**: the liquidation trigger uses each day's high. An intraday spike and reversal is caught, but the exact liquidation price can differ by slippage, and the insurance fund or auto-deleveraging is not modelled.
+- **Cross margin**: a real cross-margin account would not liquidate each position separately. v2a models the isolated-margin choice, which caps each short's loss but realizes it at the worst moment.
+- **Hindsight**: v2b's volatility exclusion is a hindsight-shaped choice (squeezes come from volatile names). Only the shadow period can tell whether it helps beyond v2a.
+"""
+    (ROOT / "reports" / "setup_v2_dev.md").write_text(text, encoding="utf-8")
+    for _, r in t.iterrows():
+        runlog.append("F9_setup_v2", f"{r['signal']} {r['variant']}", {"setup_v2": v2, "variant": r["variant"]},
+                      f"{start}..{end}", "dev out-of-fold period; exploratory",
+                      {k: v for k, v in r.items() if k not in ("signal", "variant")},
+                      decision="exploratory (not confirmatory)", gate="none", notes="reports/setup_v2_dev.md")
+    print(md(show))
+    print(md(diffs, 2))
+
+
+if __name__ == "__main__":
+    sys.stdout.reconfigure(encoding="utf-8")
+    main()

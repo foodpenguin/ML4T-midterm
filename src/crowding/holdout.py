@@ -144,3 +144,22 @@ def psi(reference: pd.Series, current: pd.Series, bins: int = 10) -> float:
     q = np.histogram(cur, edges)[0] / len(cur)
     p, q = np.clip(p, 1e-6, None), np.clip(q, 1e-6, None)
     return float(((q - p) * np.log(q / p)).sum())
+
+
+def freeze_ridge(sp: FinalSplit) -> dict:
+    """Parameters of the final ridge (same selection and fit as final_ridge) as plain numbers."""
+    X = ridge_columns()
+    ics = {}
+    for a in ridge_alphas():
+        m = models._ridge(a).fit(sp.inner_train[X], sp.inner_train["target"])
+        ics[a] = models.mean_ic(sp.inner_val, m.predict(sp.inner_val[X]))
+    best = max(ics, key=lambda a: -np.inf if np.isnan(ics[a]) else ics[a])
+    final = models._ridge(best).fit(sp.train[X], sp.train["target"])
+    return {"columns": X, "alpha": float(best), "mean": final[0].mean_.tolist(),
+            "scale": final[0].scale_.tolist(), "coef": final[-1].coef_.tolist(),
+            "intercept": float(final[-1].intercept_), "boundary": str(sp.boundary.date())}
+
+
+def predict_frozen_ridge(params: dict, rows: pd.DataFrame) -> np.ndarray:
+    z = (rows[params["columns"]].to_numpy() - np.asarray(params["mean"])) / np.asarray(params["scale"])
+    return z @ np.asarray(params["coef"]) + params["intercept"]

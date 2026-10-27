@@ -134,3 +134,45 @@ def test_metrics_drawdown_starts_from_initial_capital():
                          index=pd.date_range("2024-01-01", periods=3))
     mt = bt.metrics(daily)
     assert np.isclose(mt["max_drawdown"], 1 - 0.9 * 0.9)
+
+
+def test_short_liquidation_caps_a_squeeze_and_goes_flat():
+    """One shorted name triples intraday: the v1 loss runs, the v2a loss stops at +90%."""
+    bars, sets, cost_in = synthetic_market(n_names=40, n_days=30, seed=7)
+    syms = sorted(bars["symbol"].unique())
+    victim = syms[0]                                           # lowest score -> shorted
+    d_spike = pd.Timestamp("2023-03-03")
+    sel = (bars["symbol"] == victim) & (bars["date"] >= d_spike)
+    bars.loc[sel, ["open", "close"]] *= 3.0
+    bars.loc[sel, "high"] = bars.loc[sel, ["open", "close"]].max(axis=1) * 1.01
+    spike_day = (bars["symbol"] == victim) & (bars["date"] == d_spike - pd.Timedelta(days=1))
+    bars.loc[spike_day, "close"] *= 3.0
+    bars.loc[spike_day, "high"] = bars.loc[spike_day, "close"] * 1.01
+    m = bt.build_market(bars, sets, cost_in)
+    scores = pd.DataFrame({"date": pd.Timestamp("2023-03-01"), "symbol": syms,
+                           "score": np.arange(len(syms), dtype=float)})
+    v1 = bt.run(m, scores, "2023-03-01", "2023-03-08", cost_mult=0.0).daily
+    v2 = bt.run(m, scores, "2023-03-01", "2023-03-08", cost_mult=0.0, short_liquidation=0.9).daily
+    w_victim = 0.5 / 8                                         # k = 8 shorts of 40 names
+    j = m.symbols.get_loc(victim)
+    entry = m.mark[m.row(pd.Timestamp("2023-03-01")), j]
+    liq_loss = w_victim * 0.9 / bt.TRANCHES                    # loss stops at +90% from entry
+    assert v2["liquidations"].sum() == 1
+    assert v2["price"].sum() > v1["price"].sum()               # the cap helped
+    total_victim_v2 = -liq_loss
+    # after liquidation the name contributes nothing: v1 and v2 differ only by the victim
+    others_v1 = v1["price"].sum() - (-(w_victim / bt.TRANCHES) *
+                                      (m.mark[m.row(pd.Timestamp("2023-03-08")), j] - entry) / entry)
+    assert np.isclose(v2["price"].sum(), others_v1 + total_victim_v2, atol=1e-9)
+
+
+def test_short_eligibility_excludes_the_most_volatile():
+    rng = np.random.default_rng(5)
+    names = [f"S{i}" for i in range(60)]
+    s = pd.Series(rng.normal(size=60), index=names)
+    v = pd.Series(np.linspace(0.01, 0.2, 60), index=names)
+    w = bt.target_weights(s, v, "equal_weight", False, short_vol_cap=2 / 3)
+    shorts = w[w < 0].index
+    assert v[shorts].max() <= v.quantile(2 / 3)
+    assert len(shorts) == int(np.floor(0.2 * 60))
+    assert np.isclose(w[w < 0].sum(), -0.5)
