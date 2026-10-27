@@ -11,7 +11,7 @@ perp_crowding_premium,F1_rule,rule_carry,score = -xs rank of fund_7d; no fitting
 perp_crowding_premium,F2_features,triage,gates 1-5 on 24 candidates (20 name-level + 4 market-state),24,registered,2026-10-26,config/triage.yaml; mechanism checks on top 3 add no new candidates
 perp_crowding_premium,F3_ridge,alpha_grid,ridge alpha logspace(-2 6 9) on 14 non-STOP ranks; nested per fold,9,registered,2026-10-27,rung 2; config/models.yaml
 perp_crowding_premium,F4_lgbm,optuna,lightgbm l1; optuna 50 trials on a pre-validation window; frozen across folds,50,registered,2026-10-27,rung 3; config/models.yaml
-perp_crowding_premium,F5_deep,seq_xs_attention,hourly sequence encoder + cross-sectional attention,20,planned_optional,2026-10-26,rung 4; 5 seeds per config
+perp_crowding_premium,F5_deep,seq_xs_attention,hourly TCN encoder + cross-sectional attention; 8-config grid on the pre-validation window,8,registered,2026-10-27,rung 4; config/deep.yaml; 5 seeds per fold are not trials
 perp_crowding_premium,F6_ensemble,top3,z-scored average of top 3 runs,1,planned_optional,2026-10-26,rung 5
 perp_crowding_premium,F7_rl_v2,rl_sizing,RL exposure/threshold policy over OOS predictions,20,planned_optional,2026-10-26,setup v2; reported separately
 perp_crowding_premium,F8_backtest,registered_variants,W5 reported variants (2 allocators; vol target; kill switch; 1-day delay; spreads x3; cost sweep),0,registered,2026-10-27,config/backtest.yaml; reported side by side; nothing selected by result

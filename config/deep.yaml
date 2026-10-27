@@ -1,0 +1,60 @@
+# Rung 4 registration (ML4T Ch. 13-14, optional rung). Committed before any deep model was trained.
+registered_utc: "2026-10-27"
+hypothesis: >
+  Two kinds of structure that the daily tabular features cannot express. (1) Temporal: the hourly
+  path of positioning over the 7 days before the decision (how fast open interest built, whether
+  the crowd and the large accounts moved together or apart, bursts of aggressive flow) carries
+  information that 24-hour and 7-day averages discard. (2) Cross-sectional: a name's crowding
+  matters relative to what the rest of the universe is doing that day, which self-attention
+  over the day's names can represent.
+falsification: "paired daily-IC difference vs the deployed model (ridge) and vs the best tabular
+  model (lightgbm) has a NW 95% CI that includes or lies below 0"
+
+inputs:
+  sequence:
+    source: "data/METRICS/hourly, rows with ts in (d 00:00 - 168h, d 00:00] (ts = knowledge time)"
+    length_hours: 168
+    channels:
+      - "log(oi_h / oi_T): open-interest path relative to the decision hour"
+      - "log(oi_h / oi_{h-1}): hourly open-interest change"
+      - "log global_acct_lsr_h"
+      - "log top_pos_lsr_h"
+      - "log top_pos_lsr_h - log global_acct_lsr_h (large accounts vs crowd)"
+      - "log taker_lsvr_1h_h (aggressive flow)"
+      - "observed mask (1 if the hour has a finite snapshot)"
+    missing: "0 with mask 0; no time-series fill"
+    scaling: "per-channel mean/std fitted on each fold's training rows only"
+  static: "the 14 name-level ranks used by ridge (r_*) and mkt_fund_7d (standardized on training rows)"
+  sample: "the same dev modeling sample as W4 (sample.load_sample), so paired comparisons share rows"
+
+model:
+  encoder: "temporal convolution: 3 dilated 1-D conv blocks (kernel 3, dilation 1/4/16), GELU, then
+            mean-pool and last-step concatenated -> width"
+  token: "MLP([encoder, static]) -> width"
+  cross_section: "2-layer transformer encoder over the names of one date (4 heads, key-padding mask)"
+  head: "linear -> score"
+  loss: "1 - Pearson(score, target) within each date, averaged over dates (differentiable IC)"
+  optimizer: "AdamW, weight decay 1e-4, batch = 8 dates, max 30 epochs"
+
+protocol:
+  tuning: >
+    Fixed-holdout tuning before the first validation month, identical windows to LightGBM:
+    train on rows with label_end <= 2022-12-01, score by mean daily IC on 2022-12-01..2023-02-28
+    (labels end by 2023-03-01). One seed per config. Parameters then frozen for all folds.
+  grid: {width: [32, 64], learning_rate: [0.0003, 0.001], dropout: [0.1, 0.3]}   # 8 configs
+  per_fold: >
+    For each of the 32 walk-forward folds: train on the inner window's training rows with early
+    stopping (patience 5) on the inner window's mean daily IC to fix the epoch count; refit on the
+    full training window for that many epochs; 5 seeds, predictions averaged. Conformal quantiles
+    from the inner model's residuals on its inner window, intervals around its own predictions.
+  trials: 8
+  seeds: 5
+  compute: "Google Colab A100 via colab-cli; the same code runs on CPU for the smoke test"
+
+deployment_rule: >
+  Rung 4 replaces the deployed ridge only if its paired daily-IC difference against ridge AND
+  against lightgbm (the best tabular model) both have NW 95% CIs entirely above zero. Otherwise it
+  is reported as an optional rung that did not earn its place, and ridge stays deployed.
+also_report: "the W4 evaluation table (IC, price/funding-only IC, Q5-Q1 mean and median, conformal
+  coverage) and a W5 backtest of rung 4 under the identical protocol, labeled as not deployed unless
+  the rule above promotes it"
