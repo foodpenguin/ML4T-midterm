@@ -60,3 +60,24 @@ shadow_test:
   power_note: >
     About 90-180 days gives a Sharpe standard error near +/-1.5 to 2. The shadow test can show
     a tail effect on squeeze days, but it cannot establish a return edge.
+
+amendments:   # made after the dev exploration's code review, before any shadow data existed
+  - date: "2026-10-27"
+    change: v2b_cap_plus_short_eligibility - names with unknown rvol_20d are not eligible
+    reason: >
+      The rule did not say what happens to a name with no observed rvol_20d (new listings,
+      sparse history). The first implementation treated it as eligible, and the engine's cost
+      input filled it with a calm default of 0.05, so exactly the names v2b means to keep out of
+      the short leg could enter it. Clarified: a name with no observed rvol_20d (forward-filled
+      within the name only) is not eligible for the short leg, and the tercile cut is taken over
+      the names with a known value. A rule clarification, not a tuned parameter; no trial added.
+  - date: "2026-10-27"
+    change: accounting bug fixes in the engine (no change to the registered mechanics)
+    reason: >
+      Code review of the v2 commits found that a liquidation was not counted as turnover, that a
+      liquidated position still earned the full day's funding, that the liquidation count was per
+      tranche position rather than per name, and that the shadow day count used calendar days.
+      Fixed: a liquidation counts as turnover; a liquidated position earns no funding on its
+      liquidation day; `liquidations` counts names (tranche positions are reported separately);
+      realized shadow days are days whose decision date has frozen predictions for enough names
+      to trade. The dev exploration was rerun as a bug-fix rerun (run_log notes), not as a trial.

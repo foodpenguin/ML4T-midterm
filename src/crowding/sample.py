@@ -19,6 +19,7 @@ from .config import PROCESSED, ROOT, SEALED, setup
 from .features import FEATURES
 
 TOUCH_LOG = ROOT / "ledger" / "holdout_touches.csv"
+_TOUCHED: set[str] = set()     # sealed periods read (and logged) in this process
 
 
 def xs_rank(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
@@ -89,6 +90,12 @@ def _record_touch(period: str, reason: str) -> None:
         if new:
             w.writerow(["utc", "period", "git_commit", "reason"])
         w.writerow([datetime.now(timezone.utc).isoformat(timespec="seconds"), period, commit, reason])
+    _TOUCHED.add(period)
+
+
+def touched(period: str) -> bool:
+    """True once this process has made a logged read of ``period`` through ``load_sample``."""
+    return period in _TOUCHED
 
 
 def load_sample(period: str = "dev", horizon: int | None = None, reason: str = "",

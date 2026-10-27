@@ -176,3 +176,73 @@ def test_short_eligibility_excludes_the_most_volatile():
     assert v[shorts].max() <= v.quantile(2 / 3)
     assert len(shorts) == int(np.floor(0.2 * 60))
     assert np.isclose(w[w < 0].sum(), -0.5)
+
+
+def _double_tranche_squeeze():
+    """The lowest-score name is shorted in tranches 0 and 1; its high on day 2 is 10x."""
+    bars, sets, cost_in = synthetic_market(n_names=40, n_days=30, seed=7)
+    syms = sorted(bars["symbol"].unique())
+    victim, d_liq = syms[0], pd.Timestamp("2023-03-03")
+    sel = (bars["symbol"] == victim) & (bars["date"] == d_liq)
+    bars.loc[sel, "high"] *= 10.0
+    m = bt.build_market(bars, sets, cost_in)
+    scores = pd.DataFrame([(d, s, float(i)) for d in pd.date_range("2023-03-01", "2023-03-02")
+                           for i, s in enumerate(syms)], columns=["date", "symbol", "score"])
+    kw = dict(cost_mult=0.0)
+    v1 = bt.run(m, scores, "2023-03-01", "2023-03-07", **kw).daily
+    v2 = bt.run(m, scores, "2023-03-01", "2023-03-07", short_liquidation=0.9, **kw).daily
+    return m, victim, d_liq, v1, v2
+
+
+def test_liquidation_counts_names_once_and_tranches_separately():
+    _, _, d_liq, _, v2 = _double_tranche_squeeze()
+    assert v2.loc[d_liq, "liquidations"] == 1
+    assert v2.loc[d_liq, "liquidated_tranches"] == 2
+    assert v2["liquidations"].sum() == 1
+
+
+def test_liquidation_is_turnover_and_earns_no_funding_that_day():
+    m, victim, d_liq, v1, v2 = _double_tranche_squeeze()
+    t, j = m.row(d_liq), m.symbols.get_loc(victim)
+    w_victim = 0.5 / 8                                         # k = 8 shorts of 40 names
+    entries = [m.mark[m.row(pd.Timestamp(d)), j] for d in ("2023-03-01", "2023-03-02")]
+    exits = [max(e * 1.9, m.mark[t, j]) for e in entries]
+    liq_notional = sum(w_victim * x / e for x, e in zip(exits, entries)) / bt.TRANCHES
+    assert np.isclose(v2.loc[d_liq, "turnover"] - v1.loc[d_liq, "turnover"], liq_notional)
+    # v1 still receives the victim's funding on that day (2 tranches short), v2a does not
+    assert np.isclose(v1.loc[d_liq, "funding"] - v2.loc[d_liq, "funding"],
+                      2 * w_victim * m.funding[t, j] / bt.TRANCHES)
+
+
+def test_unknown_vol_is_not_eligible_for_the_short_leg():
+    names = [f"S{i}" for i in range(60)]
+    s = pd.Series(np.arange(60, dtype=float), index=names)     # S0 has the lowest score
+    v = pd.Series(np.linspace(0.01, 0.2, 60), index=names)
+    v_obs = v.copy()
+    v_obs["S0"] = np.nan
+    w = bt.target_weights(s, v, "equal_weight", False, short_vol_cap=2 / 3, short_vol=v_obs)
+    shorts = w[w < 0].index
+    assert "S0" not in shorts
+    assert v[shorts].max() <= v_obs.quantile(2 / 3)
+    assert len(shorts) == int(np.floor(0.2 * 60))
+
+
+def test_build_market_keeps_unknown_vol_unknown_for_eligibility():
+    bars, sets, cost_in = synthetic_market(n_names=40, n_days=10)
+    cost_in.loc[cost_in["symbol"] == "S00USDT", "rvol_20d"] = np.nan
+    m = bt.build_market(bars, sets, cost_in)
+    j = m.symbols.get_loc("S00USDT")
+    assert np.isnan(m.vol_obs[:, j]).all()
+    assert (m.vol[:, j] == 0.05).all()                         # costs still use the default
+
+
+def test_allow_shadow_needs_a_logged_shadow_read(monkeypatch):
+    from crowding import sample
+    bars, sets, cost_in = synthetic_market(n_names=40, n_days=20)
+    m = bt.build_market(bars, sets, cost_in)
+    empty = pd.DataFrame(columns=["date", "symbol", "score"])
+    monkeypatch.setattr(sample, "_TOUCHED", set())
+    with pytest.raises(PermissionError):
+        bt.run(m, empty, "2023-03-01", "2023-03-05", allow_shadow=True)
+    monkeypatch.setattr(sample, "_TOUCHED", {"shadow"})
+    bt.run(m, empty, "2023-03-01", "2023-03-05", allow_shadow=True)

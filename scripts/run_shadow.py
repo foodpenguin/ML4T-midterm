@@ -32,21 +32,16 @@ from crowding import runlog  # noqa: E402
 from crowding.config import PROCESSED, setup  # noqa: E402
 from crowding.io import load_daily_bars  # noqa: E402
 from crowding.sample import load_sample  # noqa: E402
-from crowding.stats import newey_west, sharpe_ci  # noqa: E402
-
-sys.path.insert(0, str(ROOT / "scripts"))
-from run_setup_v2 import md, summarize, variant_kwargs  # noqa: E402
+from crowding.setup_v2 import realized_days, registered_test, summarize, variant_kwargs  # noqa: E402
 
 
-def registered_test(v1: pd.Series, v2a: pd.Series, d1: dict, d2a: dict) -> dict:
-    """config/setup_v2.yaml -> shadow_test.primary_test."""
-    dr = (v2a - v1).dropna()
-    mean, se = newey_west(dr.to_numpy(), 7)
-    lo, hi = mean - 1.96 * se, mean + 1.96 * se
-    tail_better = d2a["cvar95"] < d1["cvar95"] and d2a["max_drawdown"] < d1["max_drawdown"]
-    supported = lo > 0 or (lo <= 0 <= hi and tail_better)
-    return {"mean_daily_diff": mean, "ci_low": lo, "ci_high": hi, "days": int(len(dr)),
-            "tail_better": bool(tail_better), "v2a_supported": bool(supported)}
+def md(df: pd.DataFrame, nd: int = 3) -> str:
+    cols = [str(c) for c in df.columns]
+    lines = ["| " + " | ".join(cols) + " |", "|" + "---|" * len(cols)]
+    for _, r in df.iterrows():
+        lines.append("| " + " | ".join(f"{v:.{nd}f}" if isinstance(v, (float, np.floating)) else str(v)
+                                       for v in r.values) + " |")
+    return "\n".join(lines)
 
 
 def main(rehearsal: bool) -> None:
@@ -77,14 +72,14 @@ def main(rehearsal: bool) -> None:
     end = last_bar                      # PnL day t needs the open of t+1, i.e. bar t+1 exists
     if rehearsal:                       # never let the rehearsal earn PnL from holdout prices
         end = min(end, pd.Timestamp(setup()["evaluation"]["holdout"]["start"]))
-    n_days = max(0, (end - start).days)
+    n_days = realized_days(rows, start, end)     # traded days with frozen predictions, not calendar days
     status = {"realized_days": n_days, "minimum_days": min_days, "prediction_check": check,
               "decision_dates": int(rows["date"].nunique())}
     text = [f"# Setup v2 — forward shadow test{' (REHEARSAL on a dev window)' if rehearsal else ''}",
             "", f"Registered in `config/setup_v2.yaml`. Frozen ridge from `config/frozen_ridge.json`.",
             "", f"- Prediction check: {check}.",
             f"- Realized shadow days: **{n_days}** (registered minimum {min_days})."]
-    if n_days >= 1:
+    if end > start:
         bars = load_daily_bars()
         sett = pd.read_parquet(PROCESSED / "settlements.parquet")
         uni = pd.read_parquet(PROCESSED / "universe.parquet", columns=["date", "symbol", "rank", "mean_qv_30d", "in_universe"])

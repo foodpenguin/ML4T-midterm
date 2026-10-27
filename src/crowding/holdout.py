@@ -49,7 +49,8 @@ def final_rule(rows: pd.DataFrame) -> pd.DataFrame:
     return _out(rows, -rows["r_fund_7d"].to_numpy())
 
 
-def final_ridge(sp: FinalSplit, rows: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
+def _fit_final_ridge(sp: FinalSplit):
+    """Alpha chosen by inner-window IC; returns (alpha, inner ICs, inner model, final model)."""
     X = ridge_columns()
     ics, inner = {}, {}
     for a in ridge_alphas():
@@ -57,16 +58,21 @@ def final_ridge(sp: FinalSplit, rows: pd.DataFrame) -> tuple[pd.DataFrame, dict]
         inner[a] = m
         ics[a] = models.mean_ic(sp.inner_val, m.predict(sp.inner_val[X]))
     best = max(ics, key=lambda a: -np.inf if np.isnan(ics[a]) else ics[a])
-    res = sp.inner_val["target"].to_numpy() - inner[best].predict(sp.inner_val[X])
+    return best, ics, inner[best], models._ridge(best).fit(sp.train[X], sp.train["target"])
+
+
+def final_ridge(sp: FinalSplit, rows: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
+    X = ridge_columns()
+    best, ics, inner, final = _fit_final_ridge(sp)
+    res = sp.inner_val["target"].to_numpy() - inner.predict(sp.inner_val[X])
     q = {c: conformal_q(res, c) for c in (0.8, 0.9)}
-    final = models._ridge(best).fit(sp.train[X], sp.train["target"])
     z = (rows[X].to_numpy() - final[0].mean_) / final[0].scale_
     shap = pd.DataFrame(z * final[-1].coef_, columns=X)
     shap.insert(0, "symbol", rows["symbol"].to_numpy())
     shap.insert(0, "date", rows["date"].to_numpy())
     info = {"alpha": float(best), "inner_ic": float(ics[best]), "coef": dict(zip(X, final[-1].coef_ / final[0].scale_)),
             "intercept": float(final[-1].intercept_), "shap": shap}
-    return _out(rows, final.predict(rows[X]), inner[best].predict(rows[X]), q), info
+    return _out(rows, final.predict(rows[X]), inner.predict(rows[X]), q), info
 
 
 def frozen_lgbm_params() -> dict:
@@ -147,15 +153,9 @@ def psi(reference: pd.Series, current: pd.Series, bins: int = 10) -> float:
 
 
 def freeze_ridge(sp: FinalSplit) -> dict:
-    """Parameters of the final ridge (same selection and fit as final_ridge) as plain numbers."""
-    X = ridge_columns()
-    ics = {}
-    for a in ridge_alphas():
-        m = models._ridge(a).fit(sp.inner_train[X], sp.inner_train["target"])
-        ics[a] = models.mean_ic(sp.inner_val, m.predict(sp.inner_val[X]))
-    best = max(ics, key=lambda a: -np.inf if np.isnan(ics[a]) else ics[a])
-    final = models._ridge(best).fit(sp.train[X], sp.train["target"])
-    return {"columns": X, "alpha": float(best), "mean": final[0].mean_.tolist(),
+    """Parameters of the final ridge (the same fit as final_ridge) as plain numbers."""
+    best, _, _, final = _fit_final_ridge(sp)
+    return {"columns": ridge_columns(), "alpha": float(best), "mean": final[0].mean_.tolist(),
             "scale": final[0].scale_.tolist(), "coef": final[-1].coef_.tolist(),
             "intercept": float(final[-1].intercept_), "boundary": str(sp.boundary.date())}
 

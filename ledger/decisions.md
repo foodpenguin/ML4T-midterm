@@ -58,3 +58,17 @@ the holdout tests.
 **How v2 would be evaluated**: v2 would be registered before any run. Every variant counts in
 the ledger. It would be evaluated on new data (the forward shadow period or a later holdout),
 because the current holdout will already have been used once by v1.
+
+## 2026-10-27: Setup v2 code-review fixes (before any shadow data)
+
+**Decision**: fix the engine's v2 accounting and clarify the v2b rule, then rerun the dev
+exploration as a bug-fix rerun, not as a trial (F9 stays at 2 trials). No shadow day existed
+yet, so nothing here could be shaped by the registered test's data. The amendments are listed in
+`config/setup_v2.yaml -> amendments`.
+- **Accounting fixes.** A liquidation counts as turnover. A liquidated position earns no funding
+  on its liquidation day. `liquidations` counts names, not tranche positions. The shadow test
+  counts traded days with frozen predictions, not calendar days.
+- **v2b clarification.** A name with unknown volatility is not eligible for the short leg.
+- **Guards and structure.** Shadow-period prices can enter PnL only after a logged shadow read in
+  the same process. The variant definitions and the registered test now live in
+  `src/crowding/setup_v2.py`, not in an exploration script.
