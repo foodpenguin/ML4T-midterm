@@ -128,7 +128,8 @@ def run(m: Market, scores: pd.DataFrame, start: str, end_exclusive: str, *,
         spread_mult: float = 1.0, vol_target: float | None = None,
         kill_switch: list | None = None, capital: float | None = None,
         pnl_limit: str | None = None, short_liquidation: float | None = None,
-        liquidation_fee: float = 0.0, short_vol_cap: float | None = None) -> Result:
+        liquidation_fee: float = 0.0, short_vol_cap: float | None = None,
+        allow_shadow: bool = False) -> Result:
     """Simulate the 7-tranche book from ``start`` to ``end_exclusive`` (PnL days).
 
     ``pnl_limit`` is the latest instant whose prices may enter PnL: the holdout start by
@@ -144,7 +145,8 @@ def run(m: Market, scores: pd.DataFrame, start: str, end_exclusive: str, *,
     t0, t1 = m.row(pd.Timestamp(start)), m.row(pd.Timestamp(end_exclusive))
     ev = setup()["evaluation"]
     limit = pd.Timestamp(pnl_limit or ev["holdout"]["start"])
-    assert limit <= pd.Timestamp(ev["forward_shadow"]["start"]), "PnL may never use shadow-period prices"
+    if not allow_shadow:   # only the registered shadow test (scripts/run_shadow.py) may pass this
+        assert limit <= pd.Timestamp(ev["forward_shadow"]["start"]), "PnL may never use shadow-period prices"
     assert m.dates[t1] <= limit, "backtest would earn PnL from prices beyond its allowed period"
     sc = scores.pivot(index="date", columns="symbol", values="score")
     vol_df = pd.DataFrame(m.vol, index=m.dates, columns=m.symbols)

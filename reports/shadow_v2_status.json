@@ -1,0 +1,6 @@
+{
+  "realized_days": 0,
+  "minimum_days": 90,
+  "prediction_check": "reproduced 100 committed predictions exactly (max abs diff 5.0e-09)",
+  "decision_dates": 1
+}

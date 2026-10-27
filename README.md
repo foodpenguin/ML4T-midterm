@@ -46,6 +46,17 @@ HOLDOUT_UNSEAL=1 python scripts/run_holdout.py predict   # W6, the single holdou
 python scripts/run_holdout.py report  #                        -> reports/holdout.md
 ```
 
+Setup v2 (short-leg tail control, `config/setup_v2.yaml`), after the holdout:
+
+```bash
+python scripts/run_setup_v2.py                    # dev exploration (exploratory) -> reports/setup_v2_dev.md
+HOLDOUT_UNSEAL=1 python scripts/run_shadow.py     # registered forward test     -> reports/shadow_v2.md
+```
+
+`run_shadow.py` needs a snapshot extended past 2026-10-25. It concludes nothing before 90
+realized days, and it first checks that the frozen ridge (`config/frozen_ridge.json`)
+reproduces the committed `reports/shadow_predictions.csv`.
+
 `run_holdout.py predict` refuses to run twice: the holdout is read once
 (`ledger/holdout_touches.csv`). Its confirmatory result is in `reports/holdout_confirmatory.json`.
 

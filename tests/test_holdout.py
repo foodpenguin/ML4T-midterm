@@ -77,3 +77,22 @@ def test_evaluation_targets_are_stripped():
     out = ho.strip_eval_targets(m, fit)
     assert out.loc[~fit, "target"].isna().all()
     assert out.loc[fit, "target"].equals(m.loc[fit, "target"])
+
+
+def test_shadow_registered_test_rule():
+    import importlib.util
+    import sys
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1]
+    sys.path.insert(0, str(root / "scripts"))
+    spec = importlib.util.spec_from_file_location("run_shadow", root / "scripts" / "run_shadow.py")
+    rs = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(rs)
+    rng = np.random.default_rng(0)
+    v1 = pd.Series(rng.normal(0, 0.01, 200))
+    better_tail = {"cvar95": 0.02, "max_drawdown": 0.1}
+    worse_tail = {"cvar95": 0.04, "max_drawdown": 0.3}
+    same = rs.registered_test(v1, v1 + rng.normal(0, 0.001, 200), worse_tail, better_tail)
+    assert same["ci_low"] <= 0 <= same["ci_high"] and same["v2a_supported"]          # tail-only support
+    assert not rs.registered_test(v1, v1 + rng.normal(0, 0.001, 200), better_tail, worse_tail)["v2a_supported"]
+    assert rs.registered_test(v1, v1 + 0.002, worse_tail, worse_tail)["v2a_supported"]  # return edge
