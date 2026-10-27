@@ -81,3 +81,47 @@ amendments:   # made after the dev exploration's code review, before any shadow 
       liquidation day; `liquidations` counts names (tranche positions are reported separately);
       realized shadow days are days whose decision date has frozen predictions for enough names
       to trade. The dev exploration was rerun as a bug-fix rerun (run_log notes), not as a trial.
+
+monte_carlo:   # registered 2026-10-27 before any simulation; DESCRIPTIVE robustness only
+  status: >
+    Not a trial and not evidence that v2 works: every simulated scenario is an assumption.
+    Nothing here changes a v2 parameter (the liquidation threshold, fee and tercile stay as
+    registered), and the shadow test stays the only registered test of v2. The scenario
+    ranges below were anchored on dev-period spike counts measured before registration (short
+    leg: about 7 days/yr with day high >= 2x the open, 4/yr >= 2.5x, 1/yr >= 4x; median
+    next-open retention about 0.7), so they share the dev period's hindsight.
+  comparison: v1 vs v2a (primary); ridge out-of-fold scores, equal weight, W5 costs, dev window
+  A_squeeze_injection:
+    what: >
+      Keep the real dev prices, funding and ridge scores. Add synthetic one-day squeezes to
+      names that are short in some open tranche (the lowest 20% of scores on one of the last 7
+      decision dates). At an event (t, name), the day high becomes max(high, open x peak), and
+      every later price of that name is multiplied by 1 + retention x (peak - 1). The same
+      events are used for v1 and v2a (paired), and events are nested across rates (common
+      random numbers).
+    grid:
+      events_per_year: [2, 8, 24]       # added to the real path
+      peak: [1.5, 2.5, 4.0]             # day high / day open
+      retention: [0.0, 0.5, 1.0]        # 0 = spike fully reverts by the next open (v2a's worst case)
+    simulations_per_cell: 200
+    seed: 20261027
+    report: [share of simulations where v2a's net Sharpe beats v1, mean Sharpe difference,
+             mean max-drawdown difference, mean CVaR95 difference, share where both of v2a's
+             tail measures are lower]
+  B_paired_block_bootstrap:
+    what: >
+      Stationary bootstrap (mean block 20 days) of the realized paired daily returns of v1 and
+      v2a on dev. Gives distributions of the Sharpe, max-drawdown and CVaR95 differences. Also
+      draws 90- and 180-day paths and applies the registered shadow rule to each: the share of
+      paths where v2a is "supported" (the rule's hit rate if the dev period repeated).
+    replications: 2000
+    path_lengths_days: [969, 90, 180]
+    seed: 20261027
+  C_ex_squeeze_days:
+    what: >
+      v1 vs v2a with the three squeeze days of W5 (2025-04-30, 2025-09-07, 2025-09-08) removed
+      from both daily series: the cost of v2a on ordinary days.
+  limitations: >
+    Single-day shocks only (no multi-day squeeze, no funding spike, no liquidity gap); injected
+    events are independent of the scores, while real squeezes concentrate in the most crowded
+    shorts.

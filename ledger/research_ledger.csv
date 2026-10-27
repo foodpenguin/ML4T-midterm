@@ -18,3 +18,4 @@ perp_crowding_premium,F8_backtest,registered_variants,W5 reported variants (2 al
 perp_crowding_premium,F5_deep,optuna_v2,rung-4 Optuna TPE search on the pre-validation window,30,registered,2026-10-27,config/deep_v2.yaml; registered before evaluating the grid run
 perp_crowding_premium,F5_deep,ablation_static_only,deep_v2 config without the hourly-sequence branch,1,registered,2026-10-27,config/deep_v2.yaml; diagnostic of the temporal hypothesis
 perp_crowding_premium,F9_setup_v2,short_leg_tail,v2a liquidation cap (primary) + v2b cap and short eligibility; dev exploratory then shadow test,2,registered,2026-10-27,config/setup_v2.yaml; hindsight-motivated (ledger/decisions.md)
+perp_crowding_premium,F9_setup_v2,mc_robustness,setup v2 Monte Carlo robustness (squeeze injection grid; paired block bootstrap; ex-squeeze days); descriptive,0,registered,2026-10-27,config/setup_v2.yaml -> monte_carlo; not a trial; no parameter selected
