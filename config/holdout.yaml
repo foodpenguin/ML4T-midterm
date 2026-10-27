@@ -1,0 +1,91 @@
+# Holdout freeze (W6). Committed before any holdout row was read; ledger/holdout_touches.csv is
+# empty at this commit. Setup v1, the deployed model and every rule below are frozen here.
+registered_utc: "2026-10-27"
+setup_version: v1
+holdout: {start: "2025-10-25", end: "2026-10-24"}
+trials_for_deflation: "ledger.trials_run() at run time (454 at this commit)"
+
+confirmatory:
+  model: ridge
+  test: "holdout mean daily Spearman IC (ridge vs y_total_7d), Newey-West 95% CI with lags >= 7"
+  pass_if: "CI lower bound > 0"
+  secondary: "ridge, equal weight, setup-v1 mapping and costs: holdout net Sharpe with 95% CI and
+              Deflated Sharpe; reported, not a pass/fail gate"
+descriptive_only: [rule_carry, lightgbm, deep_v2]   # reported next to ridge; never confirmatory
+
+final_models:
+  principle: "one refit per model on all dev rows (label_end <= holdout start), frozen for the
+              whole holdout; no retraining inside the holdout (textbook 17_holdout_predictions)"
+  inner_window: "dev rows with date >= holdout start - 3 months and label_end <= holdout start;
+                 inner training rows have label_end <= that window's start"
+  ridge: "alpha chosen on the inner window from logspace(-2, 6, 9); refit on all dev rows"
+  lightgbm: "parameters frozen from the W4 Optuna run (reports/models_optuna_trials.csv, best value);
+             rounds by early stopping on the inner window; refit on all dev rows"
+  rule_carry: "-rank(fund_7d), no fitting"
+  deep_v2: "config frozen in artifacts/deep/out_v2/DONE; inner model with early stopping on the
+            inner window (scaling fitted on inner training rows); 5 seeds refit on all dev rows
+            for that epoch count (scaling refitted on all dev rows), predictions averaged;
+            trained on Colab without holdout labels"
+  conformal: "80/90% intervals from the inner model's residuals on the inner window, around the
+              inner model's holdout predictions; holdout coverage reported"
+
+single_touch: >
+  The holdout is read once, by `python scripts/run_holdout.py predict` (logged in
+  ledger/holdout_touches.csv). That invocation writes the only working copy of the holdout rows
+  to artifacts/holdout/, fits the final models, predicts, and writes the confirmatory result to
+  reports/holdout_confirmatory.json before anything else is computed. Later stages (deep_v2 on
+  Colab without labels, the report) read only those artifacts; no stage reads the sealed files again.
+
+rehearsal: >
+  Before the real run, the full pipeline is rehearsed on a pseudo-holdout inside dev
+  (decision dates 2025-04-25..2025-10-24, final fits on rows with label_end <= 2025-04-25) to
+  catch bugs. Rehearsal outputs stay in artifacts/holdout_rehearsal/ and are not results.
+
+backtest:
+  protocol: "config/backtest.yaml unchanged (7 tranches, equal weight headline, same costs)"
+  pnl_window: "holdout start to forward-shadow start (exclusive)"
+  overlay_row: "vol target 20% (setup.yaml risk.overlay); kill-switch ladder reported separately"
+  benchmarks: [ew_universe, btc_hold]
+
+headline_table:
+  columns: [validation, holdout, benchmark]
+  validation_source: "dev out-of-fold predictions and the W5 dev backtest, same definitions"
+  rows:
+    signal: "daily IC [NW 95% CI], ICIR, share of positive monthly blocks"
+    portfolio: "gross Sharpe [95% CI], max drawdown, annual turnover"
+    costs: "net Sharpe at the assumed cost, break-even cost (bp per leg)"
+    risk_overlay: "net Sharpe and max drawdown with the vol-target overlay"
+    inference: "Deflated Sharpe (trials = ledger count), minimum track record (years)"
+
+pattern_rules:   # Chapter 20 classification, applied mechanically to ridge
+  signal_ic:
+    strengthens: "holdout CI low > 0 and holdout mean > validation mean"
+    holds: "holdout CI low > 0 and holdout mean >= 0.5 x validation mean"
+    decays_or_flips: "validation CI low > 0 and (holdout CI low <= 0 or holdout mean < 0.5 x validation mean)"
+    never_resolved: "validation CI low <= 0 and holdout CI low <= 0"
+  pnl_net_sharpe:
+    strengthens_or_holds: "holdout net Sharpe CI low > 0"
+    decays_or_flips: "validation net Sharpe CI low > 0 and holdout CI low <= 0"
+    marginal_behind_cost_screen: "holdout gross Sharpe > 0 >= holdout net Sharpe"
+    never_resolved: "otherwise (both CIs include 0)"
+
+figures:
+  - "equity curves, net of costs: ridge, rule_carry, EW universe, BTC; validation then holdout, boundary marked"
+  - "rolling 90-day mean daily IC of ridge with the zero line, validation then holdout"
+  - "gross-to-net Sharpe bars, validation vs holdout, break-even annotated"
+  - "regime slice in the holdout: net Sharpe and max drawdown by PIT BTC-vol tercile x BTC trend"
+  - "SHAP summary (exact linear) of the final ridge on holdout rows"
+  - "holdout drawdown with the kill-switch thresholds"
+
+diagnosis:
+  drift_checks:
+    prediction_quality: "holdout IC below the validation IC's 95% CI low"
+    portfolio_translation: "IC holds while net Sharpe falls"
+    regime_change: "regime slice and PSI of the top-5 SHAP features (dev vs holdout; watch 0.10-0.25, retrain > 0.25)"
+  next_step: "setup v2 short-leg tail control (ledger/decisions.md)"
+
+forward_shadow:
+  start: "2026-10-25"
+  now: "no realized 7-day label exists in the snapshot (data ends 2026-10-24)"
+  action: "write and commit the frozen ridge's shadow predictions with their SHA-256 now, so a later
+           evaluation (after extending the snapshot) is a test of predictions made before the outcomes"
